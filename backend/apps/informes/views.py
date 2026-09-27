@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.estandares.models import Estandar, Evaluacion
+from apps.planes.mixins import PlanGatingMixin
 from .models import Informe
 from .serializers import InformeSerializer
 
@@ -66,9 +67,10 @@ def generar_recomendaciones(cumplimiento, respuestas, estandares):
     return recomendaciones
 
 
-class InformeListView(APIView):
+class InformeListView(PlanGatingMixin, APIView):
     """GET /api/informes → lista informes de la empresa."""
     permission_classes = [IsAuthenticated]
+    required_feature = "tiene_informes"
 
     def get(self, request):
         empresa = request.user.empresa
@@ -88,9 +90,10 @@ class InformeListView(APIView):
         return Response(serializer.data)
 
 
-class InformeGenerarView(APIView):
+class InformeGenerarView(PlanGatingMixin, APIView):
     """POST /api/informes/generar → genera informe con cálculos PHVA."""
     permission_classes = [IsAuthenticated]
+    required_feature = "tiene_informes"
 
     def post(self, request):
         empresa = request.user.empresa
@@ -185,9 +188,10 @@ class InformeGenerarView(APIView):
         return Response(serializer.data, status=201)
 
 
-class InformeDetalleView(APIView):
+class InformeDetalleView(PlanGatingMixin, APIView):
     """GET /api/informes/<id> → detalle de un informe."""
     permission_classes = [IsAuthenticated]
+    required_feature = "tiene_informes"
 
     def get(self, request, informe_id):
         empresa = request.user.empresa

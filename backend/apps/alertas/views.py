@@ -4,19 +4,21 @@ from rest_framework.response import Response
 from django.db.models import Q
 
 from apps.common.mixins import EmpresaScopedViewSet
+from apps.planes.mixins import PlanGatingMixin
 from apps.accounts.models import UserRole
 from .models import ReglaAlerta
 from .serializers import ReglaAlertaSerializer
 from .services import evaluar_reglas_alertas
 
 
-class ReglaAlertaViewSet(EmpresaScopedViewSet):
+class ReglaAlertaViewSet(PlanGatingMixin, EmpresaScopedViewSet):
     """
     Gestión de reglas de alerta por empresa (o consulta de reglas globales).
     """
     queryset = ReglaAlerta.objects.all()
     serializer_class = ReglaAlertaSerializer
     filterset_fields = ["modelo_origen", "activa", "nivel_criticidad"]
+    required_feature = "tiene_alertas_email"
 
     def get_queryset(self):
         user = self.request.user

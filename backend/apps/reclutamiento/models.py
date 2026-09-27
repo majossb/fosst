@@ -847,3 +847,40 @@ class TokenAccesoCandidato(models.Model):
 
     def __str__(self):
         return f"Token para {self.candidato.email} (Vigente: {self.esta_vigente()})"
+
+
+class AsignacionRolProceso(models.Model):
+    """
+    Asignación de roles funcionales específicos por Proceso de Selección (MODULOS v02 §2.1):
+    - SELECCIONADOR: Gestiona vacante, preselección, validaciones y decisión final.
+    - ENTREVISTADOR: Programación y diligenciamiento de entrevistas asignadas.
+    - EVALUADOR: Asignación y registro de evaluaciones/pruebas asignadas.
+    - ADMIN: Acceso completo y control de excepciones/reapertura.
+    """
+    class RolReclutamiento(models.TextChoices):
+        SELECCIONADOR = "seleccionador", "Seleccionador / RH"
+        ENTREVISTADOR = "entrevistador", "Entrevistador"
+        EVALUADOR = "evaluador", "Evaluador"
+        ADMIN = "admin", "Administrador de Selección"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    proceso_seleccion = models.ForeignKey(
+        ProcesoSeleccion,
+        on_delete=models.CASCADE,
+        related_name="asignaciones_rol",
+    )
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="roles_reclutamiento",
+    )
+    rol = models.CharField(max_length=30, choices=RolReclutamiento.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "reclutamiento_asignaciones_rol"
+        unique_together = [("proceso_seleccion", "usuario", "rol")]
+
+    def __str__(self):
+        return f"{self.usuario} — {self.get_rol_display()} en {self.proceso_seleccion.codigo}"
+

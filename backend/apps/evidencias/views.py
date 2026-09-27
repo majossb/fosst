@@ -1,12 +1,11 @@
-import os
 from datetime import datetime
-
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.storage import validate_and_process_file, verify_file_integrity
 from apps.estandares.models import Evaluacion, Respuesta
 from .models import Archivo, Evidencia
 from .serializers import EvidenciaSerializer
@@ -14,8 +13,8 @@ from .serializers import EvidenciaSerializer
 
 class EvidenciaListCreateView(APIView):
     """
-    GET  /api/evidencias       → lista evidencias del año actual.
-    POST /api/evidencias       → crea evidencia con archivo (upload o URL).
+    GET  /api/evidencias       → lista evidencias activas del año actual.
+    POST /api/evidencias       → crea evidencia con archivo procesado en S3/MinIO y hash SHA-256.
     """
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -23,7 +22,7 @@ class EvidenciaListCreateView(APIView):
     def get(self, request):
         empresa = request.user.empresa
         if not empresa:
-            return Response({"message": "Sin empresa asociada."}, status=400)
+            return Response({"message": "Sin empresa asociada."}, status=status.HTTP_400_BAD_REQUEST)
 
         anio_actual = datetime.now().year
 
@@ -38,21 +37,24 @@ class EvidenciaListCreateView(APIView):
 
         evidencias = []
         for resp in respuestas:
-            for ev in resp.evidencias.all():
+            for ev in resp.evidencias.filter(deleted_at__isnull=True):
+                if ev.archivo and ev.archivo.deleted_at is not None:
+                    continue
                 evidencias.append({
-                    "id": ev.id,
+                    "id": str(ev.id),
                     "descripcion": ev.descripcion,
                     "created_at": ev.created_at,
                     "estandar_codigo": resp.estandar.codigo,
                     "estandar_nombre": resp.estandar.nombre,
-                    "respuesta_id": resp.id,
+                    "respuesta_id": str(resp.id),
                     "estado_estandar": resp.estado,
                     "archivo": {
-                        "id": ev.archivo.id,
+                        "id": str(ev.archivo.id),
                         "nombre": ev.archivo.nombre,
                         "url": ev.archivo.url,
                         "tipo_mime": ev.archivo.tipo_mime,
                         "tamanio_kb": ev.archivo.tamanio_kb,
+                        "sha256_hash": ev.archivo.sha256_hash,
                     } if ev.archivo else None,
                     "fecha_ocurrencia": ev.fecha_ocurrencia,
                     "responsable": ev.responsable,
@@ -62,13 +64,13 @@ class EvidenciaListCreateView(APIView):
         return Response({
             "evidencias": evidencias,
             "total": len(evidencias),
-            "evaluacion_id": evaluacion.id,
+            "evaluacion_id": str(evaluacion.id),
         })
 
     def post(self, request):
         empresa = request.user.empresa
         if not empresa:
-            return Response({"message": "Sin empresa asociada."}, status=400)
+            return Response({"message": "Sin empresa asociada."}, status=status.HTTP_400_BAD_REQUEST)
 
         respuesta_id = request.data.get("respuesta_id")
         nombre = request.data.get("nombre", "")
@@ -80,43 +82,37 @@ class EvidenciaListCreateView(APIView):
         responsable = request.data.get("responsable")
         firma = request.data.get("firma")
 
-        # Verificar que la respuesta pertenece a una evaluación de esta empresa
         try:
             respuesta = Respuesta.objects.select_related("evaluacion").get(id=respuesta_id)
         except Respuesta.DoesNotExist:
-            return Response({"message": "Respuesta no encontrada."}, status=404)
+            return Response({"message": "Respuesta no encontrada."}, status=status.HTTP_404_NOT_FOUND)
 
         if respuesta.evaluacion.empresa_id != empresa.id:
-            return Response({"message": "No tiene permisos sobre esta respuesta."}, status=403)
+            return Response({"message": "No tiene permisos sobre esta respuesta."}, status=status.HTTP_403_FORBIDDEN)
 
-        # Manejar archivo subido o URL
         uploaded_file = request.FILES.get("archivo")
         if uploaded_file:
-            # Guardar archivo localmente
-            upload_dir = os.path.join("uploads", "evidencias")
-            os.makedirs(upload_dir, exist_ok=True)
-            filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uploaded_file.name}"
-            filepath = os.path.join(upload_dir, filename)
-
-            with open(filepath, "wb+") as dest:
-                for chunk in uploaded_file.chunks():
-                    dest.write(chunk)
-
-            final_url = f"/uploads/evidencias/{filename}"
-            final_mime = uploaded_file.content_type
-            final_size = round(uploaded_file.size / 1024)
+            # Procesamiento centralizado en storage (S3/MinIO + SHA-256 + validaciones)
+            processed = validate_and_process_file(uploaded_file, folder="evidencias")
+            final_url = processed["url"]
+            final_mime = processed["mime_type"]
+            final_size = round(processed["size_bytes"] / 1024)
+            sha256_hash = processed["sha256_hash"]
+            file_name = processed["original_name"]
         else:
+            file_name = nombre or "archivo"
             final_url = url
             final_mime = tipo_mime
             final_size = int(tamanio_kb) if tamanio_kb else 0
+            sha256_hash = request.data.get("sha256_hash")
 
-        # Crear archivo y evidencia
         archivo = Archivo.objects.create(
-            nombre=nombre or "archivo",
+            nombre=file_name,
             url=final_url,
             tipo_mime=final_mime,
             tamanio_kb=final_size,
             subido_por=str(request.user.id),
+            sha256_hash=sha256_hash,
         )
 
         evidencia = Evidencia.objects.create(
@@ -129,27 +125,62 @@ class EvidenciaListCreateView(APIView):
         )
 
         serializer = EvidenciaSerializer(evidencia)
-        return Response(serializer.data, status=201)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class EvidenciaDeleteView(APIView):
-    """DELETE /api/evidencias/<id> → elimina evidencia verificando pertenencia."""
+    """DELETE /api/evidencias/<id> → marcado lógico (soft-delete) de la evidencia."""
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, evidencia_id):
         empresa = request.user.empresa
         if not empresa:
-            return Response({"message": "Sin empresa asociada."}, status=400)
+            return Response({"message": "Sin empresa asociada."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             evidencia = Evidencia.objects.select_related(
-                "respuesta__evaluacion"
-            ).get(id=evidencia_id)
+                "respuesta__evaluacion", "archivo"
+            ).get(id=evidencia_id, deleted_at__isnull=True)
         except Evidencia.DoesNotExist:
-            return Response({"message": "Evidencia no encontrada."}, status=404)
+            return Response({"message": "Evidencia no encontrada."}, status=status.HTTP_404_NOT_FOUND)
 
         if evidencia.respuesta.evaluacion.empresa_id != empresa.id:
-            return Response({"message": "No tiene permisos para eliminar esta evidencia."}, status=403)
+            return Response({"message": "No tiene permisos para eliminar esta evidencia."}, status=status.HTTP_403_FORBIDDEN)
 
+        # Soft delete en lugar de borrado físico real
         evidencia.delete()
-        return Response({"message": "Evidencia eliminada."})
+        if evidencia.archivo:
+            evidencia.archivo.delete()
+
+        return Response({"message": "Evidencia eliminada correctamente (marcado lógico)."})
+
+
+class EvidenciaVerificarIntegridadView(APIView):
+    """GET /api/evidencias/<id>/verificar-integridad → valida hash SHA-256."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, evidencia_id):
+        try:
+            evidencia = Evidencia.objects.select_related(
+                "respuesta__evaluacion", "archivo"
+            ).get(id=evidencia_id, deleted_at__isnull=True)
+        except Evidencia.DoesNotExist:
+            return Response({"message": "Evidencia no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        if evidencia.respuesta.evaluacion.empresa_id != request.user.empresa_id:
+            return Response({"message": "Acceso denegado."}, status=status.HTTP_403_FORBIDDEN)
+
+        archivo = evidencia.archivo
+        if not archivo or not archivo.sha256_hash:
+            return Response({
+                "integro": False,
+                "message": "La evidencia no cuenta con un hash registrado."
+            })
+
+        is_valid = verify_file_integrity(archivo.url, archivo.sha256_hash)
+        return Response({
+            "evidencia_id": str(evidencia.id),
+            "sha256_hash": archivo.sha256_hash,
+            "integro": is_valid,
+            "message": "Verificación de integridad exitosa." if is_valid else "Advertencia: El hash del archivo no coincide."
+        })

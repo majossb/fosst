@@ -2,6 +2,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.common.mixins import EmpresaScopedViewSet
+from apps.planes.mixins import PlanGatingMixin
 from .models import CalendarioActividad, Incidente, Notificacion
 from .serializers import CalendarioActividadSerializer, IncidenteSerializer, NotificacionSerializer
 
@@ -12,10 +13,11 @@ class IncidenteViewSet(EmpresaScopedViewSet):
     filterset_fields = ["tipo", "estado_investigacion"]
 
 
-class CalendarioActividadViewSet(EmpresaScopedViewSet):
+class CalendarioActividadViewSet(PlanGatingMixin, EmpresaScopedViewSet):
     queryset = CalendarioActividad.objects.all()
     serializer_class = CalendarioActividadSerializer
     filterset_fields = ["tipo", "completada"]
+    required_feature = "tiene_calendario"
 
 
 class NotificacionViewSet(EmpresaScopedViewSet):
