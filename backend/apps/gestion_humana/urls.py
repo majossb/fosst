@@ -6,6 +6,8 @@ from .views import (
     ExamenMedicoOcupacionalViewSet,
     LicenciaConduccionViewSet,
     ExpedienteTrabajadorViewSet,
+    ImportarTrabajadoresMasivoView,
+    DescargarPlantillaImportacionView,
 )
 
 router = DefaultRouter()
@@ -15,5 +17,7 @@ router.register("licencias", LicenciaConduccionViewSet, basename="licencia-condu
 router.register("expediente", ExpedienteTrabajadorViewSet, basename="expediente-trabajador")
 
 urlpatterns = [
+    path("importar-masivo/", ImportarTrabajadoresMasivoView.as_view(), name="importar-masivo"),
+    path("plantilla-importacion/", DescargarPlantillaImportacionView.as_view(), name="plantilla-importacion"),
     path("", include(router.urls)),
 ]

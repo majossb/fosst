@@ -208,3 +208,78 @@ class InformeDetalleView(PlanGatingMixin, APIView):
 
         serializer = InformeSerializer(informe)
         return Response(serializer.data)
+
+
+class InformeFirmarView(PlanGatingMixin, APIView):
+    """
+    POST /api/informes/<id>/firmar/
+    Captura la firma gráfica en canvas (base64) del Responsable SST o Alta Dirección,
+    sellando la trazabilidad de fecha/hora, usuario y hash SHA-256.
+    """
+    permission_classes = [IsAuthenticated]
+    required_feature = "tiene_informes"
+
+    def post(self, request, informe_id):
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"error": "Sin empresa asociada."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            informe = Informe.objects.select_related("evaluacion").get(id=informe_id)
+        except Informe.DoesNotExist:
+            return Response({"error": "Informe no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if informe.evaluacion.empresa_id != empresa.id:
+            return Response({"error": "No tiene permisos sobre este informe."}, status=status.HTTP_403_FORBIDDEN)
+
+        tipo_firma = request.data.get("tipo_firma", "responsable")  # 'responsable' o 'direccion'
+        imagen_firma_base64 = request.data.get("firma_base64", "")
+
+        now = datetime.now()
+        if tipo_firma == "responsable":
+            informe.firmado_responsable = True
+            informe.firma_responsable_data = imagen_firma_base64
+            informe.firma_responsable_fecha = now
+            informe.firma_responsable_usuario = request.user
+        elif tipo_firma == "direccion":
+            informe.firmado_direccion = True
+            informe.firma_direccion_data = imagen_firma_base64
+            informe.firma_direccion_fecha = now
+            informe.firma_direccion_usuario = request.user
+        else:
+            return Response({"error": "tipo_firma inválido (debe ser 'responsable' o 'direccion')."}, status=status.HTTP_400_BAD_REQUEST)
+
+        import hashlib
+        raw_hash_data = f"{informe.id}-{now.isoformat()}-{request.user.id}".encode("utf-8")
+        informe.hash_documento = hashlib.sha256(raw_hash_data).hexdigest()
+        informe.save()
+
+        serializer = InformeSerializer(informe)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class InformeDescargarPDFView(PlanGatingMixin, APIView):
+    """
+    GET /api/informes/<id>/descargar-pdf/
+    Genera y sirve el archivo PDF estampado del informe con sus firmas y código hash.
+    """
+    permission_classes = [IsAuthenticated]
+    required_feature = "tiene_informes"
+
+    def get(self, request, informe_id):
+        from django.http import HttpResponse
+        from .firmas import generar_pdf_informe_firmado
+
+        try:
+            informe = Informe.objects.select_related("evaluacion", "firma_responsable_usuario", "firma_direccion_usuario").get(id=informe_id)
+        except Informe.DoesNotExist:
+            return Response({"error": "Informe no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if informe.evaluacion.empresa_id != request.user.empresa_id:
+            return Response({"error": "No tiene permisos para acceder a este informe."}, status=status.HTTP_403_FORBIDDEN)
+
+        pdf_bytes = generar_pdf_informe_firmado(informe)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="informe_{informe.tipo}_{informe.id}.pdf"'
+        return response
+

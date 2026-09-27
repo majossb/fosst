@@ -2,6 +2,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser, FormParser
 
 from apps.accounts.models import UserRole
 from apps.capacitaciones.models import Trabajador
@@ -88,3 +90,46 @@ class ExpedienteTrabajadorViewSet(viewsets.ViewSet):
             "examenes_medicos": ExamenMedicoOcupacionalSerializer(examenes, many=True).data,
             "licencias_conduccion": LicenciaConduccionSerializer(licencias, many=True).data,
         })
+
+
+class ImportarTrabajadoresMasivoView(APIView):
+    """
+    POST /api/gestion-humana/importar-masivo/
+    Procesa la carga masiva de trabajadores desde Excel (.xlsx) o CSV (.csv).
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"error": "Sin empresa asociada."}, status=status.HTTP_400_BAD_REQUEST)
+
+        file_obj = request.FILES.get("archivo")
+        if not file_obj:
+            return Response({"error": "Debe adjuntar un archivo (.xlsx o .csv)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .importador import procesar_importacion_trabajadores
+        resultado = procesar_importacion_trabajadores(file_obj, empresa, request.user)
+
+        return Response(resultado, status=status.HTTP_200_OK)
+
+
+class DescargarPlantillaImportacionView(APIView):
+    """
+    GET /api/gestion-humana/plantilla-importacion/
+    Descarga la plantilla oficial en formato Excel (.xlsx) para importación de trabajadores.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.http import HttpResponse
+        from .importador import generar_plantilla_excel
+
+        excel_bytes = generar_plantilla_excel()
+        response = HttpResponse(
+            excel_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response["Content-Disposition"] = 'attachment; filename="plantilla_importacion_trabajadores.xlsx"'
+        return response

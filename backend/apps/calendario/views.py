@@ -12,6 +12,33 @@ class IncidenteViewSet(EmpresaScopedViewSet):
     serializer_class = IncidenteSerializer
     filterset_fields = ["tipo", "estado_investigacion"]
 
+    @action(detail=True, methods=["get"], url_path="furat-pdf")
+    def generar_furat_pdf(self, request, pk=None):
+        """GET /api/calendario/incidentes/{id}/furat-pdf → genera la plantilla oficial FURAT en PDF."""
+        from django.http import HttpResponse
+        from apps.capacitaciones.services import generar_plantilla_furat_pdf
+
+        incidente = self.get_object()
+        pdf_bytes = generar_plantilla_furat_pdf(incidente)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="FURAT_{incidente.id}.pdf"'
+        return response
+
+    @action(detail=False, methods=["get"], url_path="indicadores-accidentalidad")
+    def indicadores_accidentalidad(self, request):
+        """GET /api/calendario/incidentes/indicadores-accidentalidad → calcula IFA, ISA, ILI y tasa de accidentalidad."""
+        from apps.capacitaciones.services import calcular_indicadores_accidentalidad
+
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"error": "Sin empresa asociada."}, status=400)
+
+        anio_param = request.query_params.get("anio")
+        anio = int(anio_param) if anio_param and anio_param.isdigit() else None
+
+        indicadores = calcular_indicadores_accidentalidad(empresa, anio=anio)
+        return Response(indicadores)
+
 
 class CalendarioActividadViewSet(PlanGatingMixin, EmpresaScopedViewSet):
     queryset = CalendarioActividad.objects.all()

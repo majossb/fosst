@@ -52,8 +52,48 @@ export default function GestionHumanaView() {
     }
   }
 
+  // Bulk Import state
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<any>(null)
+
+  const handleImportSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!importFile) return
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const formData = new FormData()
+      formData.append('archivo', importFile)
+      const token = localStorage.getItem('token') || ''
+      const res = await fetch('/api/gestion-humana/importar-masivo/', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      })
+      const data = await res.json()
+      setImportResult(data)
+      if (data.creadas > 0) {
+        cargarTrabajadores()
+      }
+    } catch (err) {
+      console.error(err)
+      setImportResult({ error: 'Error al procesar la importación.' })
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const descargarPlantilla = () => {
+    window.open('/api/gestion-humana/plantilla-importacion/', '_blank')
+  }
+
   return (
     <div className="space-y-6">
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -64,7 +104,94 @@ export default function GestionHumanaView() {
             Expediente consolidado del trabajador: contratación, novedades laborales, exámenes médicos y licencias.
           </p>
         </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={descargarPlantilla}
+            className="flex items-center gap-1.5"
+          >
+            <FileText className="w-4 h-4 text-slate-500" />
+            Plantilla Excel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => { setShowImportModal(true); setImportResult(null); setImportFile(null); }}
+            className="flex items-center gap-1.5 bg-primary-600 hover:bg-primary-700 text-white"
+          >
+            <Plus className="w-4 h-4" />
+            Carga Masiva (Excel/CSV)
+          </Button>
+        </div>
       </div>
+
+      {/* Import Modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <FileText className="w-5 h-5 text-primary-500" />
+                Carga Masiva de Trabajadores (RF-RH-11)
+              </h3>
+              <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleImportSubmit} className="space-y-4">
+              <div className="p-4 border-2 border-dashed border-slate-200 rounded-lg text-center space-y-2">
+                <input
+                  type="file"
+                  accept=".xlsx, .csv"
+                  onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+                />
+                <p className="text-xs text-slate-400">Archivos soportados: Excel (.xlsx) y CSV (.csv)</p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => setShowImportModal(false)}>
+                  Cancelar
+                </Button>
+                <Button type="submit" size="sm" disabled={!importFile || importing}>
+                  {importing ? "Procesando importación..." : "Iniciar Importación"}
+                </Button>
+              </div>
+            </form>
+
+            {importResult && (
+              <div className="space-y-3 pt-3 border-t border-slate-100 max-h-60 overflow-y-auto">
+                {importResult.error ? (
+                  <p className="text-xs text-rose-600 font-semibold">{importResult.error}</p>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between text-xs font-bold p-2.5 bg-slate-50 rounded-lg">
+                      <span>Total Filas: {importResult.total_filas}</span>
+                      <span className="text-emerald-600">Creados: {importResult.creadas}</span>
+                      <span className="text-rose-600">Fallidas: {importResult.fallidas}</span>
+                    </div>
+
+                    <div className="space-y-1">
+                      {importResult.reporte?.map((item: any, idx: number) => (
+                        <div
+                          key={idx}
+                          className={`text-xs p-2 rounded flex items-center justify-between ${
+                            item.estado === 'exito' ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'
+                          }`}
+                        >
+                          <span>Fila {item.fila} (Doc: {item.documento})</span>
+                          <span className="font-medium">{item.mensaje}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Main Grid: Directory & Dossier */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
