@@ -29,6 +29,13 @@ class CatalogoPeligro(models.Model):
     class Meta:
         db_table = 'catalogo_peligros'
 
+class TipoCargo(models.TextChoices):
+    ADMINISTRATIVO = "administrativo", "Administrativo"
+    OPERATIVO = "operativo", "Operativo"
+    APOYO = "apoyo", "De Apoyo"
+    OTRO = "otro", "Otros de acuerdo al mapa de procesos"
+
+
 class PerfilCargo(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     empresa = models.ForeignKey('empresas.Empresa', on_delete=models.CASCADE, related_name='perfiles_cargo')
@@ -39,6 +46,27 @@ class PerfilCargo(models.Model):
     sede = models.ForeignKey('organizacion.Sede', on_delete=models.SET_NULL, null=True, blank=True)
     nodo_organigrama_id = models.CharField(max_length=255, null=True, blank=True)
     proceso_id = models.CharField(max_length=255, null=True, blank=True)
+
+    # --- Fase 3 Brechas v02 (§1.1) ---
+    jefe_inmediato = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='subordinados_directos',
+        help_text="Dependencia jerárquica asociada directamente a un perfil de cargo, no a persona (§1.1)"
+    )
+    tipo_cargo = models.CharField(
+        max_length=30,
+        choices=TipoCargo.choices,
+        default=TipoCargo.OPERATIVO,
+        help_text="Clasificación del tipo de cargo según el mapa de procesos (§1.1)"
+    )
+    cargo_critico = models.BooleanField(
+        default=False,
+        help_text="Indicador binario de criticidad simple. Se evalúa automáticamente si realiza tareas críticas o hay mayor riesgo."
+    )
+
     nivel_riesgo = models.IntegerField(null=True, blank=True)
     proposito = models.TextField(null=True, blank=True)
     educacion = models.TextField(null=True, blank=True)

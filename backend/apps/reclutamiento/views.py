@@ -85,11 +85,68 @@ from apps.reclutamiento.services.etapas import (
 
 class FuenteReclutamientoViewSet(EmpresaScopedViewSet):
     """
-    CRUD de catálogo de fuentes de atracción de talento por empresa.
+    CRUD de catálogo de fuentes de atracción de talento por empresa y métricas de efectividad.
     """
     queryset = FuenteReclutamiento.objects.all()
     serializer_class = FuenteReclutamientoSerializer
     permission_classes = [IsAuthenticated, IsRolParaEscritura.de("responsable", "admin")]
+
+    @action(detail=False, methods=["get"], url_path="indicadores-efectividad")
+    def indicadores_efectividad(self, request):
+        """
+        GET /api/reclutamiento/fuentes/indicadores-efectividad/
+        Devuelve el embudo completo de conversión por fuente de reclutamiento (§2.1).
+        Ejemplo: SPE -> 150 candidatos -> 40 preseleccionados -> 15 entrevistados -> 4 contratados.
+        """
+        empresa = request.user.empresa
+        if not empresa and request.user.rol != "ADMIN":
+            return Response({"error": "Sin empresa asociada."}, status=400)
+
+        fuentes = self.get_queryset()
+        resultado = []
+
+        for fuente in fuentes:
+            postulaciones = Postulacion.objects.filter(
+                empresa=empresa,
+                candidato__fuente_reclutamiento=fuente,
+                deleted_at__isnull=True
+            )
+
+            candidatos_count = postulaciones.count()
+            preseleccionados = postulaciones.filter(
+                estado__in=[
+                    Postulacion.Estado.PRESELECCIONADO,
+                    Postulacion.Estado.EN_ENTREVISTA,
+                    Postulacion.Estado.EN_EVALUACION,
+                    Postulacion.Estado.EN_VALIDACION,
+                    Postulacion.Estado.SELECCIONADO,
+                ]
+            ).count()
+
+            entrevistados = postulaciones.filter(
+                estado__in=[
+                    Postulacion.Estado.EN_ENTREVISTA,
+                    Postulacion.Estado.EN_EVALUACION,
+                    Postulacion.Estado.EN_VALIDACION,
+                    Postulacion.Estado.SELECCIONADO,
+                ]
+            ).count()
+
+            contratados = postulaciones.filter(estado=Postulacion.Estado.SELECCIONADO).count()
+
+            tasa_conversion = round((contratados / candidatos_count) * 100, 2) if candidatos_count > 0 else 0.0
+
+            resultado.append({
+                "fuente_id": str(fuente.id),
+                "fuente_nombre": fuente.nombre,
+                "candidatos": candidatos_count,
+                "preseleccionados": preseleccionados,
+                "entrevistados": entrevistados,
+                "contratados": contratados,
+                "tasa_conversion_porcentaje": tasa_conversion,
+            })
+
+        return Response(resultado)
 
 
 class CandidatoViewSet(EmpresaScopedViewSet):

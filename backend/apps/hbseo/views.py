@@ -99,6 +99,65 @@ class BrechaViewSet(EmpresaScopedViewSet):
             "por_nivel_atencion": por_nivel,
         })
 
+    @action(detail=False, methods=["get"], url_path="informes-periodo")
+    def informes_periodo(self, request):
+        """
+        GET /api/hbseo/brechas/informes-periodo/?periodo=trimestral|semestral|anual|bienal
+        Genera informe consolidado de brechas filtrado por ventana de tiempo (§3.2.2.1).
+        """
+        from datetime import timedelta
+        from django.utils import timezone
+
+        periodo = request.query_params.get("periodo", "anual")
+        fecha_inicio_param = request.query_params.get("fecha_inicio")
+        fecha_fin_param = request.query_params.get("fecha_fin")
+
+        now = timezone.now()
+        if fecha_inicio_param and fecha_fin_param:
+            try:
+                from datetime import datetime
+                fecha_inicio = datetime.strptime(fecha_inicio_param, "%Y-%m-%d")
+                fecha_fin = datetime.strptime(fecha_fin_param, "%Y-%m-%d")
+            except ValueError:
+                return Response({"error": "Formato de fecha inválido. Use YYYY-MM-DD."}, status=400)
+        else:
+            dias_map = {
+                "trimestral": 90,
+                "semestral": 180,
+                "anual": 365,
+                "bienal": 730,
+            }
+            dias = dias_map.get(periodo, 365)
+            fecha_inicio = now - timedelta(days=dias)
+            fecha_fin = now
+
+        qs = self.get_queryset().filter(fecha_deteccion__gte=fecha_inicio, fecha_deteccion__lte=fecha_fin)
+
+        total_brechas = qs.count()
+        subsanadas = qs.filter(estado=Brecha.Estado.SUBSANADA).count()
+        cerradas = qs.filter(estado=Brecha.Estado.CERRADA).count()
+        en_tratamiento = qs.filter(estado=Brecha.Estado.EN_TRATAMIENTO).count()
+        detectadas = qs.filter(estado=Brecha.Estado.DETECTADA).count()
+
+        por_clasificacion = {}
+        for clas_val, clas_label in Brecha.Clasificacion.choices:
+            count = qs.filter(clasificacion=clas_val).count()
+            if count > 0:
+                por_clasificacion[clas_val] = count
+
+        return Response({
+            "periodo": periodo,
+            "fecha_inicio": fecha_inicio.isoformat(),
+            "fecha_fin": fecha_fin.isoformat(),
+            "total_brechas": total_brechas,
+            "subsanadas": subsanadas,
+            "cerradas": cerradas,
+            "en_tratamiento": en_tratamiento,
+            "detectadas": detectadas,
+            "tasa_cierre_porcentaje": round(((subsanadas + cerradas) / total_brechas) * 100, 2) if total_brechas > 0 else 0.0,
+            "por_clasificacion": por_clasificacion,
+        })
+
 
 class BrechaAccionViewSet(EmpresaScopedViewSet):
     """

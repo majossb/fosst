@@ -243,14 +243,9 @@ def recalcular_habilitacion(trabajador_id) -> EvaluacionHabilitacion:
     porcentaje = round((puntos / total_reqs) * 100.0, 2) if total_reqs > 0 else 100.00
     evaluacion.porcentaje_cumplimiento = porcentaje
 
-    if porcentaje >= 100.0:
-        semaforo = EvaluacionHabilitacion.Semaforo.VERDE
-    elif porcentaje >= 80.0:
-        semaforo = EvaluacionHabilitacion.Semaforo.AMARILLO
-    else:
-        semaforo = EvaluacionHabilitacion.Semaforo.ROJO
-
-    evaluacion.semaforo = semaforo
+    from .constants import determinar_semaforo_y_estado
+    semaforo_calc, _ = determinar_semaforo_y_estado(porcentaje)
+    evaluacion.semaforo = semaforo_calc
     evaluacion.compatibilidad = compatibilidad
 
     # Determinar estado de habilitación

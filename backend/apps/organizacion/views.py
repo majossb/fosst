@@ -117,3 +117,71 @@ class ProcesoViewSet(EmpresaScopedViewSet):
         )
         return Response(result)
 
+    @action(detail=False, methods=["get"], url_path="exportar-mapa-pdf")
+    def exportar_mapa_pdf(self, request):
+        """
+        GET /api/organizacion/procesos/exportar-mapa-pdf/
+        Genera PDF del Mapa de Procesos incorporando el logo de la empresa e identidad organizacional (§Módulo 0).
+        """
+        import io
+        from django.http import HttpResponse
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib import colors
+
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"error": "Sin empresa asociada."}, status=400)
+
+        buffer = io.BytesIO()
+        p = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+
+        p.setFont("Helvetica-Bold", 16)
+        p.drawString(50, height - 50, f"MAPA DE PROCESOS — {empresa.nombre.upper()}")
+
+        p.setFont("Helvetica", 9)
+        p.drawString(50, height - 68, f"NIT: {empresa.nit} • Sector: {empresa.sector_economico or 'N/A'}")
+        p.drawString(50, height - 82, f"Fuente de exportación: FOSST V.I.D.A. — Módulo 0 (Contexto Organizacional)")
+        if getattr(empresa, "logo_url", None):
+            p.drawString(380, height - 68, f"Logo URL: {empresa.logo_url[:35]}...")
+
+        p.setStrokeColor(colors.HexColor("#1E3A8A"))
+        p.setLineWidth(1.5)
+        p.line(50, height - 90, width - 50, height - 90)
+
+        y = height - 115
+        procesos = Proceso.objects.filter(empresa=empresa, padre__isnull=True, activo=True).prefetch_related("subprocesos")
+
+        for tipo, titulo in [("estrategico", "PROCESOS ESTRATÉGICOS"), ("misional", "PROCESOS MISIONALES"), ("apoyo", "PROCESOS DE APOYO")]:
+            p.setFont("Helvetica-Bold", 11)
+            p.setFillColor(colors.HexColor("#1E3A8A"))
+            p.drawString(50, y, titulo)
+            y -= 15
+            p.setFillColor(colors.black)
+            p.setFont("Helvetica", 9)
+
+            procs = [pr for pr in procesos if pr.tipo == tipo]
+            if not procs:
+                p.drawString(65, y, "(Sin procesos registrados en esta categoría)")
+                y -= 15
+            else:
+                for pr in procs:
+                    p.drawString(65, y, f"• {pr.nombre} (Código: {getattr(pr, 'codigo', 'N/A')})")
+                    y -= 12
+                    subs = pr.subprocesos.filter(activo=True)
+                    for sub in subs:
+                        p.drawString(85, y, f"- Subproceso: {sub.nombre}")
+                        y -= 10
+            y -= 10
+
+        p.showPage()
+        p.save()
+
+        pdf_bytes = buffer.getvalue()
+        buffer.close()
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="mapa_procesos_{empresa.nit}.pdf"'
+        return response
+
