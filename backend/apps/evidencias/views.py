@@ -177,7 +177,11 @@ class EvidenciaVerificarIntegridadView(APIView):
                 "message": "La evidencia no cuenta con un hash registrado."
             })
 
-        is_valid = verify_file_integrity(archivo.url, archivo.sha256_hash)
+        storage_key = archivo.url.lstrip('/')
+        if storage_key.startswith('media/'):
+            storage_key = storage_key[6:]
+
+        is_valid = verify_file_integrity(storage_key, archivo.sha256_hash)
         return Response({
             "evidencia_id": str(evidencia.id),
             "sha256_hash": archivo.sha256_hash,

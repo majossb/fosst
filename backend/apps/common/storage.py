@@ -69,7 +69,8 @@ def validate_and_process_file(
     safe_name = os.path.basename(original_name).replace(" ", "_")
     storage_path = f"{folder}/{sha256_hash[:10]}_{safe_name}"
 
-    # Guardar mediante default_storage (S3/MinIO)
+    # Guardar mediante default_storage (S3/MinIO/FileSystem)
+    from django.core.files.storage import default_storage
     saved_path = default_storage.save(storage_path, ContentFile(content))
 
     return {
@@ -84,10 +85,18 @@ def validate_and_process_file(
 def verify_file_integrity(storage_key: str, expected_hash: str) -> bool:
     """
     Lee el contenido desde el storage y verifica si su SHA-256 coincide con el hash almacenado.
+    Soporta claves relativas de almacenamiento o URLs relativas de media (ej: '/media/evidencias/...').
     """
-    if not default_storage.exists(storage_key):
+    from django.core.files.storage import default_storage
+    clean_key = storage_key.lstrip('/')
+    if clean_key.startswith('media/'):
+        clean_key = clean_key[6:]
+
+    target_key = clean_key if default_storage.exists(clean_key) else storage_key
+
+    if not default_storage.exists(target_key):
         return False
-    with default_storage.open(storage_key, "rb") as f:
+    with default_storage.open(target_key, "rb") as f:
         content = f.read()
     current_hash = hashlib.sha256(content).hexdigest()
     return current_hash.lower() == expected_hash.lower()
