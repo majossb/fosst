@@ -244,8 +244,8 @@ def recalcular_habilitacion(trabajador_id) -> EvaluacionHabilitacion:
     evaluacion.porcentaje_cumplimiento = porcentaje
 
     from .constants import determinar_semaforo_y_estado
-    semaforo_calc, _ = determinar_semaforo_y_estado(porcentaje)
-    evaluacion.semaforo = semaforo_calc
+    semaforo, _ = determinar_semaforo_y_estado(porcentaje)
+    evaluacion.semaforo = semaforo
     evaluacion.compatibilidad = compatibilidad
 
     # Determinar estado de habilitación
