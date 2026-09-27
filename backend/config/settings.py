@@ -12,6 +12,7 @@ environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
+ENVIRONMENT = env("ENVIRONMENT", default="development").lower()
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -107,17 +108,25 @@ DATABASES = {
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=600)
 
 # ── Almacenamiento de objetos (S3 / MinIO via django-storages) ─────────────
+_storage_options = {
+    "access_key": env("AWS_ACCESS_KEY_ID", default="minioadmin"),
+    "secret_key": env("AWS_SECRET_ACCESS_KEY", default="minioadmin"),
+    "bucket_name": env("AWS_STORAGE_BUCKET_NAME", default="fosst-media"),
+    "region_name": env("AWS_S3_REGION_NAME", default="us-east-1"),
+    "file_overwrite": False,
+}
+_s3_endpoint = env("AWS_S3_ENDPOINT_URL", default="")
+if _s3_endpoint:
+    _storage_options["endpoint_url"] = _s3_endpoint
+
+_s3_custom_domain = env("AWS_S3_CUSTOM_DOMAIN", default="")
+if _s3_custom_domain:
+    _storage_options["custom_domain"] = _s3_custom_domain
+
 STORAGES = {
     "default": {
         "BACKEND": env("STORAGE_BACKEND", default="storages.backends.s3.S3Storage"),
-        "OPTIONS": {
-            "access_key": env("AWS_ACCESS_KEY_ID", default="minioadmin"),
-            "secret_key": env("AWS_SECRET_ACCESS_KEY", default="minioadmin"),
-            "bucket_name": env("AWS_STORAGE_BUCKET_NAME", default="fosst-media"),
-            "endpoint_url": env("AWS_S3_ENDPOINT_URL", default="http://localhost:9000"),
-            "region_name": env("AWS_S3_REGION_NAME", default="us-east-1"),
-            "file_overwrite": False,
-        }
+        "OPTIONS": _storage_options,
     },
     "staticfiles": {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
@@ -164,8 +173,9 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# ── CORS ────────────────────────────────────────────────────────────────
-CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173"])
+# ── CORS y CSRF ────────────────────────────────────────────────────────
+CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173", "http://127.0.0.1:5173"])
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000"])
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 CORS_ALLOW_HEADERS = [
@@ -181,11 +191,15 @@ SESSION_COOKIE_HTTPONLY = True                # Previene acceso a cookies via JS
 CSRF_COOKIE_HTTPONLY = True                   # CSRF cookie solo por HTTP
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
-# HSTS: en producción se recomienda activar con:
-# SECURE_HSTS_SECONDS = 31536000
-# SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-# SECURE_HSTS_PRELOAD = True
-# SECURE_SSL_REDIRECT = True  (solo si hay HTTPS)
+
+if ENVIRONMENT in ["uat", "production"]:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=31536000)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 
 # ── Django REST Framework ──────────────────────────────────────────────
 REST_FRAMEWORK = {
@@ -218,7 +232,10 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
     ),
+    # Manejador global de excepciones — mensajes amigables sin fugas técnicas
+    "EXCEPTION_HANDLER": "apps.common.exceptions.custom_exception_handler",
 }
+
 
 # ── JWT (equivalente al jsonwebtoken de Express, pero con refresh + rotación) ──
 SIMPLE_JWT = {
@@ -243,13 +260,24 @@ AXES_COOLOFF_TIME = timedelta(minutes=30)   # tiempo de bloqueo temporal
 AXES_LOCKOUT_PARAMETERS = ["username", "ip_address"]   # bloquea por usuario Y por IP
 AXES_RESET_ON_SUCCESS = True
 
-# ── Email (Resend API) ────────────────────────────────────────────────────
-RESEND_API_KEY = env("RESEND_API_KEY", default="")
-
-EMAIL_FROM = env(
-    "EMAIL_FROM",
-    default="DiagnostISST <onboarding@resend.dev>",
+# ── Configuración Email (SMTP Nativo Django) ──────────────────────────────
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.smtp.EmailBackend",
 )
+EMAIL_HOST = env("EMAIL_HOST", default="localhost")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=30)
+
+DEFAULT_FROM_EMAIL = env(
+    "DEFAULT_FROM_EMAIL",
+    default="DiagnostISST <no-reply@diagnostisst.com>",
+)
+SERVER_EMAIL = env("SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
 
 FRONTEND_URL = env(
     "FRONTEND_URL",
@@ -261,11 +289,14 @@ OTP_EXPIRATION_MINUTES = 5
 ACTIVATION_TOKEN_EXPIRATION_HOURS = 48
 PASSWORD_RESET_TOKEN_EXPIRATION_HOURS = 1
 
-# ── Cache (redis en prod/dev, LocMemCache en testing) ──────────────────────
+# ── Cache (redis en prod/uat/dev, LocMemCache en testing) ──────────────────
 import sys
 TESTING = 'test' in sys.argv if sys.argv else False
 
+REDIS_URL = env("REDIS_URL", default="redis://127.0.0.1:6379/1")
+
 if TESTING:
+    EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
@@ -273,31 +304,48 @@ if TESTING:
         }
     }
     CELERY_TASK_ALWAYS_EAGER = True
-else:
+elif ENVIRONMENT in ["uat", "production"] or (REDIS_URL and "127.0.0.1" not in REDIS_URL and "localhost" not in REDIS_URL):
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": env("REDIS_URL", default="redis://127.0.0.1:6379/1"),
+            "LOCATION": REDIS_URL,
         }
     }
+    CELERY_TASK_ALWAYS_EAGER = False
+else:
+    import socket
+    _redis_active = False
+    try:
+        _s = socket.socket()
+        _s.settimeout(0.5)
+        _redis_active = (_s.connect_ex(('127.0.0.1', 6379)) == 0)
+        _s.close()
+    except Exception:
+        _redis_active = False
+
+    if _redis_active:
+        CACHES = {
+            "default": {
+                "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                "LOCATION": REDIS_URL,
+            }
+        }
+        CELERY_TASK_ALWAYS_EAGER = False
+    else:
+        CACHES = {
+            "default": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                "LOCATION": "default-locmem",
+            }
+        }
+        CELERY_TASK_ALWAYS_EAGER = True
 
 # Celery
-CELERY_BROKER_URL = env(
-    "REDIS_URL",
-    default="redis://127.0.0.1:6379/1"
-)
-
-CELERY_RESULT_BACKEND = env(
-    "REDIS_URL",
-    default="redis://127.0.0.1:6379/1"
-)
-
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_ACCEPT_CONTENT = ["json"]
-
 CELERY_TASK_SERIALIZER = "json"
-
 CELERY_RESULT_SERIALIZER = "json"
-
 CELERY_TIMEZONE = "America/Bogota"
 
 # Celery Beat — Programación de tareas periódicas (§5.2)
@@ -311,3 +359,37 @@ CELERY_BEAT_SCHEDULE = {
 
 # ANTHROPIC SDK API KEY
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+
+# ── Validaciones de arranque para Ambiente UAT (§3) ───────────────────────
+if ENVIRONMENT == "uat":
+    from django.core.exceptions import ImproperlyConfigured
+
+    if DEBUG:
+        raise ImproperlyConfigured("UAT ERROR: DEBUG debe ser False en el ambiente UAT.")
+
+    if not SECRET_KEY or "cambia-esto" in SECRET_KEY or "django-insecure" in SECRET_KEY or len(SECRET_KEY) < 32:
+        raise ImproperlyConfigured("UAT ERROR: DJANGO_SECRET_KEY no configurada o usando valor por defecto/inseguro en UAT.")
+
+    _jwt_sec = env("JWT_SECRET", default="")
+    if not _jwt_sec or "fosst-jwt-secret" in _jwt_sec or len(_jwt_sec) < 32:
+        raise ImproperlyConfigured("UAT ERROR: JWT_SECRET no configurada o usando clave insegura por defecto en UAT.")
+
+    if any(h in ["localhost", "127.0.0.1", "*"] for h in ALLOWED_HOSTS):
+        raise ImproperlyConfigured("UAT ERROR: ALLOWED_HOSTS no puede incluir localhost, 127.0.0.1 ni '*' en UAT.")
+
+    _db_url = env("DATABASE_URL", default="")
+    if not _db_url or "localhost" in _db_url or "127.0.0.1" in _db_url or "sqlite" in _db_url:
+        raise ImproperlyConfigured("UAT ERROR: DATABASE_URL debe apuntar a una base de datos PostgreSQL UAT dedicada.")
+
+    if not REDIS_URL or "127.0.0.1" in REDIS_URL or "localhost" in REDIS_URL:
+        raise ImproperlyConfigured("UAT ERROR: REDIS_URL debe apuntar a una instancia de Redis UAT dedicada (sin localhost/127.0.0.1).")
+
+    if not FRONTEND_URL.startswith("https://"):
+        raise ImproperlyConfigured("UAT ERROR: FRONTEND_URL debe utilizar HTTPS en UAT.")
+
+    _storage_backend = env("STORAGE_BACKEND", default="")
+    if "s3" not in _storage_backend.lower():
+        raise ImproperlyConfigured("UAT ERROR: STORAGE_BACKEND debe utilizar almacenamiento S3/R2 en UAT.")
+
+    if any(origin.startswith("http://") for origin in CORS_ALLOWED_ORIGINS):
+        raise ImproperlyConfigured("UAT ERROR: CORS_ALLOWED_ORIGINS no puede contener origenes HTTP en UAT (debe usar HTTPS).")

@@ -19,16 +19,24 @@ logger = logging.getLogger(__name__)
 @receiver(post_save, sender=NovedadLaboral)
 def on_novedad_laboral_saved(sender, instance, created, **kwargs):
     """Recalcula estado contractual del trabajador al crear o modificar una novedad."""
-    trabajador = instance.trabajador
-    transaction.on_commit(
-        lambda: recalcular_estado_contractual(trabajador)
-    )
+    if instance.trabajador_id:
+        t_id = instance.trabajador_id
+        def _recalcular():
+            from apps.capacitaciones.models import Trabajador
+            trabajador = Trabajador.objects.filter(pk=t_id).first()
+            if trabajador:
+                recalcular_estado_contractual(trabajador)
+        transaction.on_commit(_recalcular)
 
 
 @receiver(post_delete, sender=NovedadLaboral)
 def on_novedad_laboral_deleted(sender, instance, **kwargs):
     """Recalcula estado contractual del trabajador al eliminar una novedad."""
-    trabajador = instance.trabajador
-    transaction.on_commit(
-        lambda: recalcular_estado_contractual(trabajador)
-    )
+    if instance.trabajador_id:
+        t_id = instance.trabajador_id
+        def _recalcular():
+            from apps.capacitaciones.models import Trabajador
+            trabajador = Trabajador.objects.filter(pk=t_id).first()
+            if trabajador:
+                recalcular_estado_contractual(trabajador)
+        transaction.on_commit(_recalcular)

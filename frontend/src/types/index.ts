@@ -152,9 +152,12 @@ export interface Evaluacion {
 }
 
 export interface Hallazgo {
-  id: string; evaluacion_id: string; auditor_id: string
+  id: string; evaluacion_id?: string; evaluacion?: string; auditor_id?: string
   descripcion: string; tipo: TipoHallazgo; created_at: string
   auditor?: { id: string; nombre: string }
+  auditor_nombre?: string
+  estandar_codigo?: string
+  estandar_nombre?: string
 }
 
 export interface PlanMejora {

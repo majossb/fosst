@@ -65,6 +65,8 @@ class Apelacion(models.Model):
     class Estado(models.TextChoices):
         PENDIENTE = "pendiente", "Pendiente"
         RESUELTA = "resuelta", "Resuelta"
+        ACEPTADA = "aceptada", "Aceptada"
+        RECHAZADA = "rechazada", "Rechazada"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     respuesta = models.ForeignKey(Respuesta, on_delete=models.CASCADE, related_name="apelaciones")
@@ -77,3 +79,4 @@ class Apelacion(models.Model):
 
     class Meta:
         db_table = "apelaciones"
+

@@ -62,6 +62,14 @@ export interface ExpedienteConsolidado {
   licencias_conduccion: LicenciaConduccion[]
 }
 
+export interface ImportarMasivoResponse {
+  success: boolean
+  creadas: number
+  errores_count: number
+  errores: Array<{ fila: number; identificacion?: string; nombre?: string; motivo: string }>
+  mensaje: string
+}
+
 export const gestionHumanaService = {
   getTrabajadores: () => {
     return apiClient.get<Trabajador[] | { results: Trabajador[] }>('/trabajadores')
@@ -87,4 +95,10 @@ export const gestionHumanaService = {
   createLicencia: (data: Partial<LicenciaConduccion>) => {
     return apiClient.post<LicenciaConduccion>('/gestion-humana/licencias/', data)
   },
+  importarMasivo: (file: File) => {
+    const formData = new FormData()
+    formData.append('archivo', file)
+    return apiClient.post<ImportarMasivoResponse>('/gestion-humana/importar-masivo/', formData)
+  },
 }
+

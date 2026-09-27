@@ -125,6 +125,22 @@ class InformeGenerarView(PlanGatingMixin, APIView):
         puntaje_obtenido = sum(float(r.puntaje or 0) for r in respuestas)
         cumplimiento = round((puntaje_obtenido / puntaje_maximo) * 100) if puntaje_maximo > 0 else 0
 
+        # Check existing appeals for this evaluation
+        from apps.estandares.models import Apelacion
+        apelaciones_qs = Apelacion.objects.filter(respuesta__evaluacion=evaluacion).select_related("respuesta__estandar", "solicitante")
+        apelaciones_list = [
+            {
+                "id": str(ap.id),
+                "estandar_codigo": ap.respuesta.estandar.codigo,
+                "estandar_nombre": ap.respuesta.estandar.nombre,
+                "motivo": ap.motivo,
+                "estado": ap.estado,
+                "respuesta_auditor": ap.respuesta_auditor or "",
+                "solicitante": (ap.solicitante.get_full_name() or ap.solicitante.username) if ap.solicitante else "",
+            }
+            for ap in apelaciones_qs
+        ]
+
         # Generar contenido estructurado del informe
         contenido = {
             "meta": {
@@ -134,7 +150,9 @@ class InformeGenerarView(PlanGatingMixin, APIView):
                 "nit": empresa.nit,
                 "anio": evaluacion.anio,
                 "capitulo": evaluacion.capitulo,
+                "auditor_nombre": (request.user.get_full_name() or request.user.username) if request.user else "",
             },
+            "estado": "BORRADOR",
             "resumen_ejecutivo": {
                 "cumplimiento_global": cumplimiento,
                 "puntaje_obtenido": round(puntaje_obtenido, 2),
@@ -162,33 +180,193 @@ class InformeGenerarView(PlanGatingMixin, APIView):
                 {
                     "tipo": h.tipo,
                     "descripcion": h.descripcion,
-                    "auditor": h.auditor.nombre if hasattr(h.auditor, "nombre") else str(h.auditor),
+                    "auditor": h.auditor.get_full_name() if hasattr(h.auditor, "get_full_name") and h.auditor.get_full_name() else str(h.auditor),
                     "fecha": h.created_at.isoformat(),
+                    "estandar_codigo": h.estandar.codigo if h.estandar else None,
                 }
-                for h in evaluacion.hallazgos.all()
+                for h in evaluacion.hallazgos.select_related("auditor", "estandar").all()
             ],
+            "apelaciones": apelaciones_list,
             "clasificacion": (
                 "ACEPTABLE" if cumplimiento >= 86
                 else "MODERADAMENTE ACEPTABLE" if cumplimiento >= 61
                 else "CRÍTICO"
             ),
-            "recomendaciones": generar_recomendaciones(cumplimiento, respuestas, estandares),
+            "narrativa": {
+                "conclusiones": "",
+                "recomendaciones": "",
+                "observaciones_finales": "",
+            },
         }
 
-        informe = Informe.objects.create(
+        # UPSERT: reutilizar borrador existente para esta evaluación + tipo, evitar duplicados
+        existing = Informe.objects.filter(
             evaluacion=evaluacion,
             tipo=tipo,
-            contenido_json=contenido,
-        )
+            deleted_at__isnull=True,
+        ).exclude(contenido_json__estado="FINALIZADO").first()
+
+        if existing:
+            existing.contenido_json = contenido
+            existing.save(update_fields=["contenido_json"])
+            informe = existing
+            accion_audit = "REGENERAR_INFORME_BORRADOR"
+        else:
+            informe = Informe.objects.create(
+                evaluacion=evaluacion,
+                tipo=tipo,
+                contenido_json=contenido,
+            )
+            accion_audit = "GENERAR_INFORME"
 
         from apps.auditoria.helpers import registrar_audit_log
-        registrar_audit_log(request, "GENERAR_INFORME", tabla_afectada="informes", registro_id=informe.id, valores_nuevos={"tipo": tipo})
+        registrar_audit_log(request, accion_audit, tabla_afectada="informes", registro_id=informe.id, valores_nuevos={"tipo": tipo})
 
         serializer = InformeSerializer(informe)
-        return Response(serializer.data, status=201)
+        return Response(serializer.data, status=200 if existing else 201)
+
+
+class InformeGuardarBorradorView(PlanGatingMixin, APIView):
+    """POST /api/informes/<id>/guardar-borrador → guarda campos narrativos editables por el Auditor."""
+    permission_classes = [IsAuthenticated]
+    required_feature = "tiene_informes"
+
+    def post(self, request, informe_id):
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"error": "Sin empresa asociada."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            informe = Informe.objects.select_related("evaluacion").get(id=informe_id)
+        except Informe.DoesNotExist:
+            return Response({"error": "Informe no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if informe.evaluacion.empresa_id != empresa.id:
+            return Response({"error": "No tiene permisos sobre este informe."}, status=status.HTTP_403_FORBIDDEN)
+
+        contenido = informe.contenido_json or {}
+        if contenido.get("estado") == "FINALIZADO":
+            return Response(
+                {"error": "El informe ya se encuentra finalizado y bloqueado."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        narrativa = contenido.get("narrativa") or {}
+        narrativa["conclusiones"] = str(request.data.get("conclusiones", narrativa.get("conclusiones", ""))).strip()
+        narrativa["recomendaciones"] = str(request.data.get("recomendaciones", narrativa.get("recomendaciones", ""))).strip()
+        narrativa["observaciones_finales"] = str(request.data.get("observaciones_finales", narrativa.get("observaciones_finales", ""))).strip()
+
+        contenido["narrativa"] = narrativa
+        informe.contenido_json = contenido
+        informe.save(update_fields=["contenido_json"])
+
+        serializer = InformeSerializer(informe)
+        return Response({"success": True, "message": "El informe se guardó correctamente.", "data": serializer.data})
+
+
+class InformeFinalizarView(PlanGatingMixin, APIView):
+    """POST /api/informes/<id>/finalizar → finaliza el informe y bloquea ediciones narrativas."""
+    permission_classes = [IsAuthenticated]
+    required_feature = "tiene_informes"
+
+    def post(self, request, informe_id):
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"error": "Sin empresa asociada."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            informe = Informe.objects.select_related("evaluacion").get(id=informe_id)
+        except Informe.DoesNotExist:
+            return Response({"error": "Informe no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if informe.evaluacion.empresa_id != empresa.id:
+            return Response({"error": "No tiene permisos sobre este informe."}, status=status.HTTP_403_FORBIDDEN)
+
+        contenido = informe.contenido_json or {}
+        if contenido.get("estado") == "FINALIZADO":
+            return Response(
+                {"error": "El informe ya se encuentra finalizado y bloqueado."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        narrativa = contenido.get("narrativa") or {}
+        if "conclusiones" in request.data:
+            narrativa["conclusiones"] = str(request.data.get("conclusiones")).strip()
+        if "recomendaciones" in request.data:
+            narrativa["recomendaciones"] = str(request.data.get("recomendaciones")).strip()
+        if "observaciones_finales" in request.data:
+            narrativa["observaciones_finales"] = str(request.data.get("observaciones_finales")).strip()
+
+        contenido["narrativa"] = narrativa
+        contenido["estado"] = "FINALIZADO"
+        contenido["fecha_finalizacion"] = datetime.now().isoformat()
+        contenido["auditor_finalizo"] = request.user.get_full_name() or request.user.username
+
+        informe.contenido_json = contenido
+        informe.save(update_fields=["contenido_json"])
+
+        from apps.auditoria.helpers import registrar_audit_log
+        registrar_audit_log(request, "FINALIZAR_INFORME", tabla_afectada="informes", registro_id=informe.id, valores_nuevos={"estado": "FINALIZADO"})
+
+        serializer = InformeSerializer(informe)
+        return Response({"success": True, "message": "El informe final se generó correctamente.", "data": serializer.data})
+
+
+class InformeDescartarBorradorView(PlanGatingMixin, APIView):
+    """
+    DELETE /api/informes/<id>/descartar-borrador
+    Descarta (soft-delete) un borrador de informe.
+    NO elimina: evaluación, respuestas, hallazgos, apelaciones, notificaciones ni historial.
+    Solo marca deleted_at en el registro Informe.
+    Restringido a borradores (estado != FINALIZADO) y al Auditor/Admin de la misma empresa.
+    """
+    permission_classes = [IsAuthenticated]
+    required_feature = "tiene_informes"
+
+    def delete(self, request, informe_id):
+        from django.utils import timezone as tz
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"error": "Sin empresa asociada."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            informe = Informe.objects.select_related("evaluacion").get(
+                id=informe_id,
+                deleted_at__isnull=True,
+            )
+        except Informe.DoesNotExist:
+            return Response({"error": "Informe no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if informe.evaluacion.empresa_id != empresa.id:
+            return Response({"error": "No tiene permisos sobre este informe."}, status=status.HTTP_403_FORBIDDEN)
+
+        contenido = informe.contenido_json or {}
+        if contenido.get("estado") == "FINALIZADO":
+            return Response(
+                {"error": "No se puede descartar un informe ya finalizado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        informe.deleted_at = tz.now()
+        informe.save(update_fields=["deleted_at"])
+
+        from apps.auditoria.helpers import registrar_audit_log
+        registrar_audit_log(
+            request,
+            "DESCARTAR_BORRADOR_INFORME",
+            tabla_afectada="informes",
+            registro_id=informe.id,
+            valores_nuevos={"deleted_at": informe.deleted_at.isoformat()},
+        )
+
+        return Response(
+            {"success": True, "message": "El borrador fue descartado correctamente."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class InformeDetalleView(PlanGatingMixin, APIView):
+
     """GET /api/informes/<id> → detalle de un informe."""
     permission_classes = [IsAuthenticated]
     required_feature = "tiene_informes"

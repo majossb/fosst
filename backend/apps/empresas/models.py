@@ -109,3 +109,24 @@ class SolicitudEliminacion(models.Model):
     def __str__(self):
         return f"Eliminación de {self.tabla} ({self.registro_id}) - {self.estado}"
 
+
+class TransicionCapitulo(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    empresa = models.ForeignKey(Empresa, on_delete=models.CASCADE, related_name="transiciones_capitulo")
+    evaluacion = models.ForeignKey("estandares.Evaluacion", on_delete=models.SET_NULL, null=True, blank=True, related_name="transiciones")
+    capitulo_anterior = models.CharField(max_length=10)
+    capitulo_nuevo = models.CharField(max_length=10)
+    usuario = models.ForeignKey("accounts.Usuario", on_delete=models.PROTECT, related_name="transiciones_realizadas")
+    motivo = models.TextField(blank=True, default="")
+    contexto_anterior = models.JSONField(default=dict)
+    contexto_nuevo = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "transiciones_capitulo"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Transición {self.capitulo_anterior} -> {self.capitulo_nuevo} ({self.empresa.nombre})"
+
+

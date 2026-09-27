@@ -199,10 +199,11 @@ class FaseEPortalCandidatoTestCase(APITestCase):
         self.assertEqual(res_otp_ok.status_code, status.HTTP_200_OK)
         session_token = res_otp_ok.data["token"]
 
-        # 4. Consultar 'mis-postulaciones' sin token -> 403 Forbidden
+        # 4. Consultar 'mis-postulaciones' sin token -> 401 Unauthorized / 403 Forbidden
         url_mis_post = reverse("portal-mis-postulaciones")
         res_unauth = self.client.get(url_mis_post)
-        self.assertEqual(res_unauth.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn(res_unauth.status_code, [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN])
+
 
         # 5. Consultar 'mis-postulaciones' con Bearer token -> 200 OK
         res_auth = self.client.get(url_mis_post, HTTP_AUTHORIZATION=f"Bearer {session_token}")

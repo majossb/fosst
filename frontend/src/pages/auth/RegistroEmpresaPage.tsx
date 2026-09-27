@@ -2,6 +2,8 @@ import { useState, FormEvent, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { authService } from '@/services/auth.service'
 import { Pencil, Eye, EyeOff } from 'lucide-react'
+import { PasswordPolicyIndicator, checkPasswordPolicy } from '@/components/ui/PasswordPolicyIndicator'
+import { ApiError, ERROR_CODE_MESSAGES } from '@/services/api.client'
 
 interface CiiuItem {
   codigo_768: string
@@ -44,7 +46,9 @@ export default function RegistroEmpresaPage() {
   // ── Estados UI ──────────────────────────────────────────────────
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [registeredSuccess, setRegisteredSuccess] = useState(false)
+
 
   // ── Búsqueda autocompletada CIIU ─────────────────────────────────
   useEffect(() => {
@@ -140,13 +144,19 @@ export default function RegistroEmpresaPage() {
       setError('El número de documento debe contener únicamente dígitos.')
       return
     }
+    const nombrePersonaRegex = /^[a-zA-ZáéíóúÁÉÍÓÚüÜñÑ\s'\-]+$/
+    if (!responsableNombre.trim() || !nombrePersonaRegex.test(responsableNombre.trim())) {
+      setError('El nombre del responsable solo puede contener letras en español y espacios.')
+      return
+    }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
     if (!emailRegex.test(cleanEmail)) {
       setError('Por favor, ingresa un correo electrónico válido.')
       return
     }
-    if (responsablePassword.length < 8) {
-      setError('La contraseña debe tener al menos 8 caracteres.')
+    const pwdReqs = checkPasswordPolicy(responsablePassword)
+    if (!pwdReqs.isValid) {
+      setError('La contraseña debe tener al menos 8 caracteres, una letra mayúscula, una minúscula, un número y un carácter especial.')
       return
     }
     if (responsablePassword !== confirmPassword) {
@@ -155,13 +165,15 @@ export default function RegistroEmpresaPage() {
     }
 
     setLoading(true)
+    setFieldErrors({})
     try {
       await authService.registrarEmpresa({
         nombre: cleanNombre,
         nit: cleanNit,
         num_trabajadores: Number(numTrabajadores),
         nivel_riesgo: Number(nivelRiesgo),
-        ciiu_codigo: manualOverride ? codigoCiiuManual : (selectedCiiu?.codigo_768 || ''),
+        ciiu_codigo: selectedCiiu?.ciiu_rev4 || (manualOverride ? codigoCiiuManual : ''),
+        ciiu_768_principal: manualOverride ? codigoCiiuManual : (selectedCiiu?.codigo_768 || ''),
         ciiu_descripcion: selectedCiiu?.descripcion || queryCiiu,
         sector_economico: selectedCiiu?.sector || '',
         responsable_nombre: responsableNombre.trim(),
@@ -171,7 +183,18 @@ export default function RegistroEmpresaPage() {
       })
       setRegisteredSuccess(true)
     } catch (err: any) {
-      setError(err?.message || 'No fue posible registrar la empresa. Intenta nuevamente.')
+      if (err instanceof ApiError) {
+        setError(err.friendlyMessage)
+        if (err.fieldErrors) {
+          const map: Record<string, string> = {}
+          for (const [k, v] of Object.entries(err.fieldErrors)) {
+            map[k] = Array.isArray(v) ? v[0] : String(v)
+          }
+          setFieldErrors(map)
+        }
+      } else {
+        setError(err?.message || 'No fue posible registrar la empresa. Intenta nuevamente.')
+      }
     } finally {
       setLoading(false)
     }
@@ -228,12 +251,13 @@ export default function RegistroEmpresaPage() {
                       <input
                         id="reg-nombre"
                         type="text"
-                        className="field-input"
+                        className={`field-input ${fieldErrors.nombre ? 'field-input-error' : ''}`}
                         placeholder="Ej. Constructora Andina S.A.S."
                         value={nombre}
-                        onChange={e => setNombre(e.target.value)}
+                        onChange={e => { setNombre(e.target.value); setFieldErrors(prev => ({ ...prev, nombre: '' })) }}
                         required
                       />
+                      {fieldErrors.nombre && <div className="field-error-text">🔴 {fieldErrors.nombre}</div>}
                     </div>
 
                     <div>
@@ -241,12 +265,13 @@ export default function RegistroEmpresaPage() {
                       <input
                         id="reg-nit"
                         type="text"
-                        className="field-input"
+                        className={`field-input ${fieldErrors.nit ? 'field-input-error' : ''}`}
                         placeholder="Ej. 900234567"
                         value={nit}
-                        onChange={e => setNit(e.target.value.replace(/\D/g, ''))}
+                        onChange={e => { setNit(e.target.value.replace(/\D/g, '')); setFieldErrors(prev => ({ ...prev, nit: '' })) }}
                         required
                       />
+                      {fieldErrors.nit && <div className="field-error-text">🔴 {fieldErrors.nit}</div>}
                     </div>
 
                     <div>
@@ -255,20 +280,22 @@ export default function RegistroEmpresaPage() {
                         id="reg-trabajadores"
                         type="number"
                         min="1"
-                        className="field-input"
+                        className={`field-input ${fieldErrors.num_trabajadores ? 'field-input-error' : ''}`}
                         placeholder="Ej. 25"
                         value={numTrabajadores}
                         onChange={e => {
                           const val = parseInt(e.target.value, 10)
                           setNumTrabajadores(isNaN(val) || val < 1 ? '' : val)
+                          setFieldErrors(prev => ({ ...prev, num_trabajadores: '' }))
                         }}
                         required
                       />
+                      {fieldErrors.num_trabajadores && <div className="field-error-text">🔴 {fieldErrors.num_trabajadores}</div>}
                     </div>
 
                     {/* Autocompletado de Actividad Económica */}
                     <div style={{ position: 'relative' }}>
-                      <label className="field-label" htmlFor="reg-ciiu">Actividad Económica (Búsqueda CIIU)</label>
+                      <label className="field-label" htmlFor="reg-ciiu">Actividad Económica (Búsqueda Decreto 768 / CIIU)</label>
                       <input
                         id="reg-ciiu"
                         type="text"
@@ -293,7 +320,10 @@ export default function RegistroEmpresaPage() {
                               onClick={() => handleSelectCiiu(item)}
                               className="ciiu-dropdown-item"
                             >
-                              <span className="ciiu-code">{item.codigo_768}</span>
+                              <span className="ciiu-code" title="Código Decreto 768">{item.codigo_768}</span>
+                              {item.ciiu_rev4 && (
+                                <span className="ciiu-rev4-tag" title="CIIU Rev. 4">CIIU {item.ciiu_rev4}</span>
+                              )}
                               <span className="ciiu-desc">{item.descripcion}</span>
                               <span className="ciiu-risk">Riesgo {item.clase_riesgo}</span>
                             </li>
@@ -311,7 +341,7 @@ export default function RegistroEmpresaPage() {
                           <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/>
                           <path d="M12 16v-4M12 8h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                         </svg>
-                        <span>Clasificación Automática Res. 0312 / 2019</span>
+                        <span>Clasificación Económica (Dec. 768 / CIIU Rev. 4)</span>
                       </div>
 
                       <button
@@ -326,7 +356,7 @@ export default function RegistroEmpresaPage() {
 
                     <div className="clasificacion-grid">
                       <div className="clas-box">
-                        <span className="clas-label">Código CIIU</span>
+                        <span className="clas-label">Código Actividad (Dec. 768)</span>
                         {manualOverride ? (
                           <input
                             type="text"
@@ -337,6 +367,11 @@ export default function RegistroEmpresaPage() {
                         ) : (
                           <span className="clas-val">{selectedCiiu?.codigo_768 || 'Pendiente'}</span>
                         )}
+                      </div>
+
+                      <div className="clas-box">
+                        <span className="clas-label">CIIU Rev. 4</span>
+                        <span className="clas-val">{selectedCiiu?.ciiu_rev4 || 'Pendiente'}</span>
                       </div>
 
                       <div className="clas-box">
@@ -357,7 +392,7 @@ export default function RegistroEmpresaPage() {
                       </div>
 
                       <div className="clas-box">
-                        <span className="clas-label">Capítulo SG-SST Aplicable</span>
+                        <span className="clas-label">Capítulo SG-SST</span>
                         <span className="clas-val badge-cap">Capítulo {capituloCalculado}</span>
                       </div>
                     </div>
@@ -380,12 +415,13 @@ export default function RegistroEmpresaPage() {
                       <input
                         id="reg-resp-nombre"
                         type="text"
-                        className="field-input"
+                        className={`field-input ${fieldErrors.responsable_nombre ? 'field-input-error' : ''}`}
                         placeholder="Ej. María Jose Quintero"
                         value={responsableNombre}
-                        onChange={e => setResponsableNombre(e.target.value)}
+                        onChange={e => { setResponsableNombre(e.target.value); setFieldErrors(prev => ({ ...prev, responsable_nombre: '' })) }}
                         required
                       />
+                      {fieldErrors.responsable_nombre && <div className="field-error-text">🔴 {fieldErrors.responsable_nombre}</div>}
                     </div>
 
                     <div>
@@ -393,12 +429,13 @@ export default function RegistroEmpresaPage() {
                       <input
                         id="reg-resp-doc"
                         type="text"
-                        className="field-input"
+                        className={`field-input ${fieldErrors.responsable_documento ? 'field-input-error' : ''}`}
                         placeholder="Cédula de ciudadanía"
                         value={responsableDocumento}
-                        onChange={e => setResponsableDocumento(e.target.value.replace(/\D/g, ''))}
+                        onChange={e => { setResponsableDocumento(e.target.value.replace(/\D/g, '')); setFieldErrors(prev => ({ ...prev, responsable_documento: '' })) }}
                         required
                       />
+                      {fieldErrors.responsable_documento && <div className="field-error-text">🔴 {fieldErrors.responsable_documento}</div>}
                     </div>
 
                     <div>
@@ -406,12 +443,13 @@ export default function RegistroEmpresaPage() {
                       <input
                         id="reg-resp-email"
                         type="email"
-                        className="field-input"
+                        className={`field-input ${fieldErrors.responsable_email ? 'field-input-error' : ''}`}
                         placeholder="usuario@empresa.com"
                         value={responsableEmail}
-                        onChange={e => setResponsableEmail(e.target.value)}
+                        onChange={e => { setResponsableEmail(e.target.value); setFieldErrors(prev => ({ ...prev, responsable_email: '' })) }}
                         required
                       />
+                      {fieldErrors.responsable_email && <div className="field-error-text">🔴 {fieldErrors.responsable_email}</div>}
                     </div>
 
                     <div>
@@ -420,10 +458,10 @@ export default function RegistroEmpresaPage() {
                         <input
                           id="reg-resp-pwd"
                           type={showPassword ? 'text' : 'password'}
-                          className="field-input"
+                          className={`field-input ${fieldErrors.responsable_password ? 'field-input-error' : ''}`}
                           placeholder="Mínimo 8 caracteres"
                           value={responsablePassword}
-                          onChange={e => setResponsablePassword(e.target.value)}
+                          onChange={e => { setResponsablePassword(e.target.value); setFieldErrors(prev => ({ ...prev, responsable_password: '' })) }}
                           required
                         />
                         <button
@@ -436,18 +474,9 @@ export default function RegistroEmpresaPage() {
                         </button>
                       </div>
 
-                      {/* Fortaleza de contraseña */}
-                      {responsablePassword && (
-                        <div className="pwd-meter">
-                          <div
-                            className="pwd-bar"
-                            style={{ width: `${pwdStrength.score}%`, backgroundColor: pwdStrength.color }}
-                          />
-                          <span className="pwd-text" style={{ color: pwdStrength.color }}>
-                            {pwdStrength.label}
-                          </span>
-                        </div>
-                      )}
+                      {/* Indicador de Requisitos de Contraseña */}
+                      <PasswordPolicyIndicator password={responsablePassword} />
+                      {fieldErrors.responsable_password && <div className="field-error-text">🔴 {fieldErrors.responsable_password}</div>}
                     </div>
 
                     <div>
@@ -455,12 +484,18 @@ export default function RegistroEmpresaPage() {
                       <input
                         id="reg-resp-confirm"
                         type={showPassword ? 'text' : 'password'}
-                        className="field-input"
+                        className={`field-input ${fieldErrors.confirm_password ? 'field-input-error' : ''}`}
                         placeholder="Repite la contraseña"
                         value={confirmPassword}
-                        onChange={e => setConfirmPassword(e.target.value)}
+                        onChange={e => { setConfirmPassword(e.target.value); setFieldErrors(prev => ({ ...prev, confirm_password: '' })) }}
                         required
                       />
+                      {fieldErrors.confirm_password && <div className="field-error-text">🔴 {fieldErrors.confirm_password}</div>}
+                      {confirmPassword && !fieldErrors.confirm_password && (
+                        <div style={{ marginTop: '6px', fontSize: '11px', fontWeight: 600, color: responsablePassword === confirmPassword ? '#10B981' : '#EF4444' }}>
+                          {responsablePassword === confirmPassword ? '✓ Las contraseñas coinciden' : '✕ Las contraseñas no coinciden'}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </section>
@@ -521,6 +556,8 @@ const CSS = `
   .field-label{font-size:11px;font-weight:700;letter-spacing:0.5px;color:var(--azul-medio);text-transform:uppercase;margin-bottom:6px;display:block;}
   .field-input{width:100%;height:46px;padding:0 14px;border:1.5px solid var(--borde);border-radius:10px;font-family:'Inter',sans-serif;font-size:14px;font-weight:600;color:var(--azul-oscuro);background:var(--blanco);outline:none;transition:border-color 0.2s,box-shadow 0.2s;}
   .field-input:focus{border-color:var(--azul-claro);box-shadow:0 0 0 3px rgba(42,111,173,0.12);}
+  .field-input-error{border-color:#EF4444 !important;background:#FEF2F2 !important;}
+  .field-error-text{font-size:11px;font-weight:700;color:#DC2626;margin-top:4px;}
   .field-input-sm{height:36px;padding:0 10px;border:1.5px solid var(--borde);border-radius:8px;font-size:13px;font-weight:700;outline:none;}
 
   .searching-spinner{position:absolute;right:12px;top:36px;font-size:11px;color:var(--naranja);font-weight:700;}
@@ -528,6 +565,7 @@ const CSS = `
   .ciiu-dropdown-item{padding:10px 12px;border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:10px;font-size:13px;transition:background 0.15s;}
   .ciiu-dropdown-item:hover{background:var(--gris-claro);}
   .ciiu-code{font-weight:800;color:var(--naranja);background:rgba(245,168,0,0.1);padding:2px 6px;border-radius:6px;font-size:11px;}
+  .ciiu-rev4-tag{font-weight:700;color:var(--azul-claro);background:rgba(44,90,160,0.1);padding:2px 6px;border-radius:6px;font-size:10px;font-mono:monospace;}
   .ciiu-desc{flex:1;color:var(--azul-oscuro);font-weight:600;}
   .ciiu-risk{font-size:11px;color:#6B7280;font-weight:700;}
 
@@ -537,8 +575,8 @@ const CSS = `
   .btn-toggle-manual{background:none;border:none;color:var(--naranja);font-size:12px;font-weight:800;cursor:pointer;}
   .btn-toggle-manual:hover{text-decoration:underline;}
 
-  .clasificacion-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;}
-  @media(max-width:600px){.clasificacion-grid{grid-template-columns:1fr;}}
+  .clasificacion-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px;}
+  @media(max-width:640px){.clasificacion-grid{grid-template-columns:repeat(2,1fr);}}
   .clas-box{background:var(--blanco);border:1px solid #E2E8F0;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:4px;}
   .clas-label{font-size:10px;font-weight:700;color:#6B7280;text-transform:uppercase;}
   .clas-val{font-size:14px;font-weight:800;color:var(--azul-oscuro);}

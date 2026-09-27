@@ -102,14 +102,14 @@ export default function AuditorDashboard() {
                       {row.hallazgo_id ? (
                         <button
                           className="text-brand-700 hover:text-brand-600 font-bold transition-colors text-xs"
-                          onClick={() => navigate('/app/auditor/hallazgos')}
+                          onClick={() => navigate(`/app/auditor/hallazgos?estandar=${row.codigo}`)}
                         >
                           Ver
                         </button>
                       ) : (
                         <button
                           className="text-slate-400 hover:text-brand-700 transition-colors flex items-center gap-1 text-xs"
-                          onClick={() => navigate('/app/auditor/hallazgos')}
+                          onClick={() => navigate(`/app/auditor/hallazgos?estandar=${row.codigo}`)}
                         >
                           <Plus className="w-3 h-3" /> Agregar
                         </button>

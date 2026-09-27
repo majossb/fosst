@@ -93,9 +93,23 @@ class SolicitarResetPasswordSerializer(serializers.Serializer):
 
 class ConfirmarResetPasswordSerializer(serializers.Serializer):
     token = serializers.CharField()
-    password = serializers.CharField(
-        validators=[validate_password]
-    )
+    password = serializers.CharField()
+    confirm_password = serializers.CharField(write_only=True, required=False)
+
+    def validate_password(self, value):
+        from .validators import validar_politica_password
+        try:
+            validar_politica_password(value)
+        except Exception as e:
+            raise serializers.ValidationError(str(e.message if hasattr(e, 'message') else e))
+        return value
+
+    def validate(self, attrs):
+        pwd = attrs.get("password")
+        pwd_confirm = attrs.get("confirm_password") or attrs.get("passwordConfirm")
+        if pwd_confirm is not None and pwd != pwd_confirm:
+            raise serializers.ValidationError({"confirm_password": "Las contraseñas no coinciden."})
+        return attrs
 
 
 class EmpresaResumenSerializer(serializers.ModelSerializer):

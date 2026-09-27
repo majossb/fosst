@@ -4,8 +4,9 @@ import { useAuth } from '@/store/auth.context'
 import { ROLE_LABELS } from '@/types'
 import {
   LogOut, Bell, Shield, Menu, X, ChevronDown,
-  LucideIcon,
+  LucideIcon, Check,
 } from 'lucide-react'
+import { notificacionService, NotificacionItem } from '@/services/notificacion.service'
 
 // ── Tipos ───────────────────────────────────────────────────────
 export interface NavItem {
@@ -125,6 +126,130 @@ function SidebarSection({
           </NavLink>
         ))}
       </div>
+    </div>
+  )
+}
+
+// ── Notification Popover ─────────────────────────────────────────
+function NotificationPopover() {
+  const [notifs, setNotifs] = useState<NotificacionItem[]>([])
+  const [isOpen, setIsOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+
+  const cargarNotificaciones = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await notificacionService.listar()
+      const list = Array.isArray(res) ? res : ((res as any)?.results || [])
+      setNotifs(list)
+    } catch (err) {
+      console.error('Error al cargar notificaciones:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    cargarNotificaciones()
+  }, [cargarNotificaciones])
+
+  const handleMarcarLeida = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    try {
+      await notificacionService.marcarLeida(id)
+      setNotifs(prev => prev.map(n => n.id === id ? { ...n, leida: true } : n))
+    } catch (err) {
+      console.error('Error al marcar leida:', err)
+    }
+  }
+
+  const unreadCount = notifs.filter(n => !n.leida).length
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="relative p-1.5 rounded-lg text-slate-400 hover:text-primary-500 hover:bg-slate-50 transition-colors"
+        title="Notificaciones"
+      >
+        <Bell className="w-5 h-5" />
+        {unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 px-1.5 py-0.5 text-[10px] font-black leading-none text-white bg-rose-500 rounded-full shadow-sm">
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
+        )}
+      </button>
+
+      {isOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+          <div className="absolute right-0 mt-2 w-80 md:w-96 bg-white rounded-xl shadow-xl border border-slate-100 z-50 overflow-hidden animate-fade-in">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-primary-500" />
+                <span className="text-xs font-bold text-primary-500">Notificaciones</span>
+                {unreadCount > 0 && (
+                  <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-brand-100 text-brand-700">
+                    {unreadCount} sin leer
+                  </span>
+                )}
+              </div>
+              <button onClick={() => setIsOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
+              {loading && notifs.length === 0 ? (
+                <div className="p-4 text-center text-xs text-slate-400">Cargando notificaciones...</div>
+              ) : notifs.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400">Sin notificaciones</div>
+              ) : (
+                notifs.map((n) => {
+                  const nivelConfig = {
+                    critico: { bg: 'bg-rose-50 text-rose-700 border-rose-200', label: 'Crítico' },
+                    importante: { bg: 'bg-amber-50 text-amber-700 border-amber-200', label: 'Importante' },
+                    normal: { bg: 'bg-blue-50 text-blue-700 border-blue-200', label: 'Normal' },
+                  }[n.nivel || 'normal']
+
+                  return (
+                    <div
+                      key={n.id}
+                      className={`p-3 text-xs transition-colors flex items-start gap-2.5 ${
+                        !n.leida ? 'bg-primary-50/30' : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded border ${nivelConfig.bg}`}>
+                            {nivelConfig.label}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            {n.created_at ? new Date(n.created_at).toLocaleDateString() : ''}
+                          </span>
+                        </div>
+                        <p className={`text-slate-700 leading-snug ${!n.leida ? 'font-semibold' : ''}`}>
+                          {n.mensaje}
+                        </p>
+                      </div>
+
+                      {!n.leida && (
+                        <button
+                          onClick={(e) => handleMarcarLeida(n.id, e)}
+                          title="Marcar como leída"
+                          className="p-1 text-slate-400 hover:text-brand-500 hover:bg-white rounded border border-transparent hover:border-slate-200 transition-all flex-shrink-0"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -290,10 +415,7 @@ export function AppShell({ sections, topbarRight, children, breadcrumb }: AppShe
 
           <div className="flex items-center gap-3">
             {topbarRight}
-            <button className="relative text-slate-400 hover:text-primary-500 transition-colors">
-              <Bell className="w-4 h-4" />
-              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-brand-500" />
-            </button>
+            <NotificationPopover />
           </div>
         </header>
 

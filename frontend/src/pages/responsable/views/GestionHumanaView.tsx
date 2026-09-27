@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Card, Button } from '@/components/ui'
+import { BACKEND_URL } from '@/services/api.client'
+
 import {
   gestionHumanaService,
   Trabajador,
@@ -64,32 +66,23 @@ export default function GestionHumanaView() {
     setImporting(true)
     setImportResult(null)
     try {
-      const formData = new FormData()
-      formData.append('archivo', importFile)
-      const token = localStorage.getItem('token') || ''
-      const res = await fetch('/api/gestion-humana/importar-masivo/', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        body: formData,
-      })
-      const data = await res.json()
+      const data = await gestionHumanaService.importarMasivo(importFile)
       setImportResult(data)
       if (data.creadas > 0) {
         cargarTrabajadores()
       }
-    } catch (err) {
-      console.error(err)
-      setImportResult({ error: 'Error al procesar la importación.' })
+    } catch (err: any) {
+      setImportResult({ error: err?.friendlyMessage || err?.message || 'Error al procesar la importación.' })
     } finally {
       setImporting(false)
     }
   }
 
   const descargarPlantilla = () => {
-    window.open('/api/gestion-humana/plantilla-importacion/', '_blank')
+    const token = localStorage.getItem('token') || ''
+    window.open(`${BACKEND_URL}/api/gestion-humana/plantilla-importacion/?token=${token}`, '_blank')
   }
+
 
   return (
     <div className="space-y-6">
@@ -106,8 +99,7 @@ export default function GestionHumanaView() {
         </div>
         <div className="flex items-center gap-2">
           <Button
-            variant="outline"
-            size="sm"
+            variant="ghost"
             onClick={descargarPlantilla}
             className="flex items-center gap-1.5"
           >
@@ -115,9 +107,9 @@ export default function GestionHumanaView() {
             Plantilla Excel
           </Button>
           <Button
-            size="sm"
+            variant="secondary"
             onClick={() => { setShowImportModal(true); setImportResult(null); setImportFile(null); }}
-            className="flex items-center gap-1.5 bg-primary-600 hover:bg-primary-700 text-white"
+            className="flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" />
             Carga Masiva (Excel/CSV)
@@ -151,10 +143,10 @@ export default function GestionHumanaView() {
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">
-                <Button type="button" variant="outline" size="sm" onClick={() => setShowImportModal(false)}>
+                <Button type="button" variant="ghost" onClick={() => setShowImportModal(false)}>
                   Cancelar
                 </Button>
-                <Button type="submit" size="sm" disabled={!importFile || importing}>
+                <Button type="submit" variant="secondary" disabled={!importFile || importing}>
                   {importing ? "Procesando importación..." : "Iniciar Importación"}
                 </Button>
               </div>

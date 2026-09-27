@@ -22,7 +22,7 @@ def verificar_acceso_plan(user, feature_flag: str) -> Tuple[bool, str]:
     if not user or not user.is_authenticated:
         return False, "Usuario no autenticado."
 
-    if getattr(user, "rol", None) == UserRole.ADMIN:
+    if getattr(user, "rol", None) in [UserRole.ADMIN, UserRole.AUDITOR]:
         return True, ""
 
     empresa = getattr(user, "empresa", None)

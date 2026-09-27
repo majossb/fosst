@@ -54,6 +54,8 @@ const AuditorDash            = lazy(() => import('@/pages/auditor/views/Dashboar
 const EvidenciasAuditorView  = lazy(() => import('@/pages/auditor/views/EvidenciasAuditorView'))
 const HallazgosView          = lazy(() => import('@/pages/auditor/views/HallazgosView'))
 const InformeAuditoriaView   = lazy(() => import('@/pages/auditor/views/InformeAuditoriaView'))
+const HistorialAuditorView   = lazy(() => import('@/pages/auditor/views/HistorialAuditorView'))
+const ApelacionesAuditorView = lazy(() => import('@/pages/auditor/views/ApelacionesAuditorView'))
 
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'))
 
@@ -248,7 +250,8 @@ const router = createBrowserRouter([
             { path: 'autoevaluacion',   element: <Lazy><AutoevaluacionView /></Lazy> },
             { path: 'hallazgos',        element: <Lazy><HallazgosView /></Lazy> },
             { path: 'informe',          element: <Lazy><InformeAuditoriaView /></Lazy> },
-            { path: 'historial',        element: <Lazy><HistorialADView /></Lazy> },
+            { path: 'historial',        element: <Lazy><HistorialAuditorView /></Lazy> },
+            { path: 'apelaciones',      element: <Lazy><ApelacionesAuditorView /></Lazy> },
           ],
         }],
       },

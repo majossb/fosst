@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react'
 import { useSearchParams, Link, useNavigate } from 'react-router-dom'
 import { authService } from '@/services/auth.service'
+import { PasswordPolicyIndicator, checkPasswordPolicy } from '@/components/ui/PasswordPolicyIndicator'
 
 export default function ResetearPasswordPage() {
   const [searchParams] = useSearchParams()
@@ -24,13 +25,9 @@ export default function ResetearPasswordPage() {
       return
     }
 
-    if (!password) {
-      setError('Por favor, ingresa tu nueva contraseña.')
-      return
-    }
-
-    if (password.length < 8) {
-      setError('La contraseña debe tener al menos 8 caracteres.')
+    const pwdReqs = checkPasswordPolicy(password)
+    if (!pwdReqs.isValid) {
+      setError('La contraseña debe cumplir con todos los requisitos de seguridad (8+ caracteres, mayúscula, minúscula, número y símbolo).')
       return
     }
 
@@ -120,6 +117,7 @@ export default function ResetearPasswordPage() {
                         required 
                       />
                     </div>
+                    <PasswordPolicyIndicator password={password} />
                   </div>
 
                   <div>
@@ -140,6 +138,11 @@ export default function ResetearPasswordPage() {
                         required 
                       />
                     </div>
+                    {passwordConfirm && (
+                      <div style={{ marginTop: '6px', fontSize: '11px', fontWeight: 600, color: password === passwordConfirm ? '#10B981' : '#EF4444' }}>
+                        {password === passwordConfirm ? '✓ Las contraseñas coinciden' : '✕ Las contraseñas no coinciden'}
+                      </div>
+                    )}
                   </div>
                 </div>
 

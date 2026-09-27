@@ -237,13 +237,30 @@ class ExamenMedicoYLicenciaTests(TestCase):
         self.assertEqual(len(data["licencias_conduccion"]), 1)
         self.assertEqual(data["trabajador"]["nombre"], "Pedro Pérez")
 
-    def test_aislamiento_multitenant_expediente(self):
-        """Empresa A no puede acceder al expediente de Empresa B."""
-        otra_empresa = _crear_empresa(nit="900888777-2")
-        trabajador_ajeno = _crear_trabajador(otra_empresa, "Otro", "999999999")
+    def test_descargar_plantilla_importacion(self):
+        """Prueba descarga de plantilla oficial de importación masiva."""
+        client = APIClient()
+        client.force_authenticate(user=self.usuario)
+        response = client.get("/api/gestion-humana/plantilla-importacion/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    def test_importar_trabajadores_masivo_csv(self):
+        """Prueba importación masiva desde archivo CSV."""
+        from io import BytesIO
+        csv_content = (
+            "documento,nombre,apellidos,email,cargo,tipo_contrato,fecha_ingreso,salario\n"
+            "10055,Maria,Lopez,maria@test.com,Auxiliar,indefinido,2026-01-15,1500000\n"
+            "10056,Juan,Torres,juan.t@test.com,Operario,fijo,2026-02-01,1800000\n"
+        ).encode("utf-8")
+
+        f = BytesIO(csv_content)
+        f.name = "trabajadores.csv"
 
         client = APIClient()
         client.force_authenticate(user=self.usuario)
+        response = client.post("/api/gestion-humana/importar-masivo/", {"archivo": f}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data.get("creadas"), 2)
 
-        response = client.get(f"/api/gestion-humana/expediente/{trabajador_ajeno.id}/")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+

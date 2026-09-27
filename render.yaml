@@ -1,0 +1,105 @@
+# ==============================================================================
+# Render Blueprint Specification — FOSST V.I.D.A. (UAT Environment)
+# ==============================================================================
+
+databases:
+  - name: fosst-db-uat
+    databaseName: fosst_uat_db
+    user: fosst_uat_user
+    plan: starter
+    region: oregon
+
+services:
+  # ── 1. Backend Web Service (Django + Gunicorn) ──────────────────────────────
+  - type: web
+    name: fosst-backend-uat
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: |
+      cd backend
+      pip install -r requirements.txt
+      python manage.py collectstatic --noinput
+      python manage.py migrate
+    startCommand: |
+      cd backend
+      gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 3 --timeout 120
+    envVars:
+      - key: ENVIRONMENT
+        value: uat
+      - key: DEBUG
+        value: "False"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fosst-db-uat
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: fosst-redis-uat
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: JWT_SECRET
+        generateValue: true
+
+  # ── 2. Celery Worker (Procesamiento Asíncrono de Tareas) ───────────────────
+  - type: worker
+    name: fosst-worker-uat
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: |
+      cd backend
+      pip install -r requirements.txt
+    startCommand: |
+      cd backend
+      celery -A config worker --loglevel=info --concurrency=2
+    envVars:
+      - key: ENVIRONMENT
+        value: uat
+      - key: DEBUG
+        value: "False"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fosst-db-uat
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: fosst-redis-uat
+          property: connectionString
+
+  # ── 3. Celery Beat (Planificador de Alertas y Vencimientos Diarios) ────────
+  - type: worker
+    name: fosst-beat-uat
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: |
+      cd backend
+      pip install -r requirements.txt
+    startCommand: |
+      cd backend
+      celery -A config beat --loglevel=info
+    envVars:
+      - key: ENVIRONMENT
+        value: uat
+      - key: DEBUG
+        value: "False"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fosst-db-uat
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: fosst-redis-uat
+          property: connectionString
+
+  # ── 4. Redis Service ────────────────────────────────────────────────────────
+  - type: redis
+    name: fosst-redis-uat
+    region: oregon
+    plan: starter
+    maxmemoryPolicy: allkeys-lru

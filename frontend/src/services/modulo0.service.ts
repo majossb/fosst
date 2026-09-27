@@ -109,6 +109,41 @@ export interface CiiuDescripcionResponse {
   fuente: string
 }
 
+// ── RF-USR-03: Transición de Capítulo ─────────────────────────────
+export interface TransicionCapituloPayload {
+  /** Nuevo número de trabajadores que origina el cambio */
+  num_trabajadores: number
+  /** Nuevo nivel de riesgo que origina el cambio */
+  nivel_riesgo: number
+  /** Motivo libre del responsable SST (opcional) */
+  motivo?: string
+}
+
+export interface TransicionCapituloResult {
+  id: string
+  capitulo_anterior: string
+  capitulo_nuevo: string
+  created_at: string
+  evaluacion_id: string
+}
+
+export interface TransicionCapituloResponse {
+  success: boolean
+  message: string
+  empresa: EmpresaContexto
+  transicion: TransicionCapituloResult
+}
+
+export interface HistorialTransicionItem {
+  id: string
+  capitulo_anterior: string
+  capitulo_nuevo: string
+  motivo: string
+  usuario_nombre: string
+  created_at: string
+  contexto_anterior: { num_trabajadores: number; nivel_riesgo: number }
+  contexto_nuevo: { num_trabajadores: number; nivel_riesgo: number }
+}
 
 export const modulo0Service = {
   // Contexto
@@ -156,4 +191,16 @@ export const modulo0Service = {
       codigo_principal: codigoPrincipal,
       codigos_secundarios: codigosSecundarios,
     }),
+
+  // ── RF-USR-03: Transición de Capítulo ──────────────────────────
+  /**
+   * Confirma atómicamente una transición de capítulo.
+   * Solo debe llamarse tras mostrar el modal de confirmación al usuario.
+   */
+  confirmarTransicionCapitulo: (payload: TransicionCapituloPayload) =>
+    apiClient.post<TransicionCapituloResponse>('/modulo0/transicion-capitulo', payload),
+
+  /** Consulta el historial inmutable de transiciones de capítulo. */
+  getHistorialTransiciones: () =>
+    apiClient.get<HistorialTransicionItem[]>('/modulo0/historial-transiciones'),
 }

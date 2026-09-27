@@ -7,6 +7,8 @@ from .views import (
     DescribirCiiuIAView,
     UpdateIdentidadView,
     SugerirIdentidadIAView,
+    TransicionCapituloView,
+    HistorialTransicionesCapituloView,
 )
 
 urlpatterns = [
@@ -17,4 +19,7 @@ urlpatterns = [
     path("contexto/ciiu/describir", DescribirCiiuIAView.as_view(), name="modulo0-ciiu-describir"),
     path("identidad", UpdateIdentidadView.as_view(), name="modulo0-identidad"),
     path("identidad/sugerir-ia", SugerirIdentidadIAView.as_view(), name="modulo0-identidad-sugerir-ia"),
+    path("transicion-capitulo", TransicionCapituloView.as_view(), name="modulo0-transicion-capitulo"),
+    path("historial-transiciones", HistorialTransicionesCapituloView.as_view(), name="modulo0-historial-transiciones"),
 ]
+

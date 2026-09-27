@@ -1,9 +1,12 @@
 import os
 import time
+import secrets
+from datetime import timedelta
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.conf import settings
+from django.template.loader import render_to_string
 from rest_framework import status, viewsets
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -11,9 +14,11 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from apps.accounts.permissions import EsAdmin
-from apps.accounts.models import Usuario, UserRole
+from apps.accounts.models import Usuario, UserRole, TokenActivacion
+from apps.accounts.tasks import enviar_email_task
 from apps.auditoria.models import AuditLog
-from .models import Empresa
+from .models import Empresa, TransicionCapitulo
+
 from .serializers import EmpresaSerializer, RegistroEmpresaSerializer
 from .permissions import EsCorporativo, PerteneceAMismaEmpresaOAdmin
 from .utils_ciiu import filtrar_candidatos, buscar_por_codigo_768, buscar_multiples_por_codigo_768
@@ -84,6 +89,22 @@ class RegistroEmpresaView(APIView):
 
         capitulo = clasificar_capitulo(num_trabajadores, nivel_riesgo)
 
+        ciiu_768_principal = data.get("ciiu_768_principal", "") or ""
+        ciiu_codigo = data.get("ciiu_codigo", "") or ""
+        ciiu_descripcion = data.get("ciiu_descripcion", "") or ""
+
+        # Normalización de códigos Dec 768 (7 dígitos) y CIIU Rev. 4 (4 dígitos)
+        if ciiu_768_principal and len(ciiu_768_principal) == 7 and not ciiu_codigo:
+            found = buscar_por_codigo_768(ciiu_768_principal)
+            if found:
+                ciiu_codigo = found.get("ciiu_rev4", "")
+        elif ciiu_codigo and len(ciiu_codigo) == 7:
+            if not ciiu_768_principal:
+                ciiu_768_principal = ciiu_codigo
+            found = buscar_por_codigo_768(ciiu_768_principal)
+            if found:
+                ciiu_codigo = found.get("ciiu_rev4", "")
+
         with transaction.atomic():
             empresa = Empresa.objects.create(
                 nombre=nombre,
@@ -96,8 +117,9 @@ class RegistroEmpresaView(APIView):
                 arl=arl,
                 sector_economico=sector_economico,
                 ciudad=ciudad,
-                ciiu_codigo=data.get("ciiu_codigo", ""),
-                ciiu_descripcion=data.get("ciiu_descripcion", ""),
+                ciiu_codigo=ciiu_codigo,
+                ciiu_768_principal=ciiu_768_principal,
+                ciiu_descripcion=ciiu_descripcion,
             )
 
             # Dividir responsable_nombre en first_name y last_name
@@ -115,12 +137,19 @@ class RegistroEmpresaView(APIView):
                 email=responsable_email,
                 rol=UserRole.RESPONSABLE,
                 empresa=empresa,
-                activo=True,
-                is_active=True,
-                email_verificado=True,
+                activo=False,
+                is_active=False,
+                email_verificado=False,
             )
             usuario.set_password(responsable_password)
             usuario.save()
+
+            token = TokenActivacion.objects.create(
+                usuario=usuario,
+                token=secrets.token_urlsafe(32),
+                expira_en=timezone.now()
+                + timedelta(hours=settings.ACTIVATION_TOKEN_EXPIRATION_HOURS),
+            )
 
             AuditLog.objects.create(
                 usuario=usuario,
@@ -134,6 +163,23 @@ class RegistroEmpresaView(APIView):
                 metodo_http=request.method,
             )
 
+        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173").rstrip("/")
+        enlace = f"{frontend_url}/activar-cuenta?token={token.token}"
+
+        cuerpo = render_to_string(
+            "emails/activacion_cuenta.txt",
+            {
+                "usuario": usuario,
+                "enlace": enlace,
+            },
+        )
+
+        enviar_email_task.delay(
+            "Activa tu cuenta en DiagnostISST",
+            cuerpo,
+            usuario.email,
+        )
+
         usuario_data = {
             "id": str(usuario.id),
             "nombre": responsable_nombre,
@@ -146,7 +192,7 @@ class RegistroEmpresaView(APIView):
 
         return Response(
             {
-                "message": f"Empresa registrada exitosamente en Capítulo {capitulo}.",
+                "message": f"Empresa registrada exitosamente en Capítulo {capitulo}. Revisa tu correo electrónico para activar la cuenta.",
                 "empresa": empresa_serializer.data,
                 "usuario": usuario_data,
             },
@@ -224,6 +270,30 @@ class ContextoEmpresaView(APIView):
                 }
             )
 
+        # ── Detección de cambio de capítulo ──────────────────────────
+        target_trabajadores = datos_nuevos.get("num_trabajadores", empresa.num_trabajadores)
+        target_riesgo = datos_nuevos.get("nivel_riesgo", empresa.nivel_riesgo)
+        capitulo_calculado = clasificar_capitulo(target_trabajadores, target_riesgo)
+        confirmar = request.data.get("confirmar_transicion") is True
+
+        # Si el nuevo contexto implica un cambio de capítulo y NO ha sido confirmado:
+        # NO PERSISTIR el nuevo contexto aún y devolver la respuesta estructurada de confirmación.
+        if capitulo_calculado != empresa.capitulo_vigente and not confirmar:
+            return Response(
+                {
+                    "success": False,
+                    "code": "CHAPTER_CHANGE_REQUIRES_CONFIRMATION",
+                    "message": "Las condiciones actuales de la empresa corresponden a un capítulo normativo diferente.",
+                    "data": {
+                        "capitulo_anterior": empresa.capitulo_vigente,
+                        "capitulo_nuevo": capitulo_calculado,
+                        "num_trabajadores": target_trabajadores,
+                        "nivel_riesgo": target_riesgo,
+                    },
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         with transaction.atomic():
             for key, val in datos_nuevos.items():
                 setattr(empresa, key, val)
@@ -252,6 +322,143 @@ class ContextoEmpresaView(APIView):
                 "empresa": serializer.data,
             }
         )
+
+
+# ── POST /api/modulo0/transicion-capitulo ─────────────────────────
+class TransicionCapituloView(APIView):
+    """Confirmación e instrumentación de transición atómica de capítulo."""
+    permission_classes = [IsAuthenticated, EsCorporativo]
+
+    def post(self, request):
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"success": False, "code": "RESOURCE_NOT_FOUND", "message": "Sin empresa asociada."}, status=400)
+
+        num_trabajadores = int(request.data.get("num_trabajadores", empresa.num_trabajadores))
+        nivel_riesgo = int(request.data.get("nivel_riesgo", empresa.nivel_riesgo))
+        motivo = str(request.data.get("motivo", "")).strip()
+
+        capitulo_calculado = clasificar_capitulo(num_trabajadores, nivel_riesgo)
+        capitulo_anterior = empresa.capitulo_vigente
+
+        if capitulo_calculado == capitulo_anterior:
+            return Response(
+                {
+                    "success": False,
+                    "code": "SAME_CHAPTER_TRANSITION_INVALID",
+                    "message": "No fue posible realizar el cambio de capítulo porque las condiciones actuales de la empresa no corresponden a la transición solicitada.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.estandares.models import Evaluacion, Respuesta
+        from django.db.models import Sum
+        from datetime import datetime
+
+        contexto_anterior = {
+            "num_trabajadores": empresa.num_trabajadores,
+            "nivel_riesgo": empresa.nivel_riesgo,
+        }
+        contexto_nuevo = {
+            "num_trabajadores": num_trabajadores,
+            "nivel_riesgo": nivel_riesgo,
+        }
+
+        anio_actual = datetime.now().year
+
+        with transaction.atomic():
+            # 1. Actualizar contexto y capítulo de la empresa conjuntamente
+            empresa.num_trabajadores = num_trabajadores
+            empresa.nivel_riesgo = nivel_riesgo
+            empresa.capitulo_vigente = capitulo_calculado
+            empresa.save(update_fields=["num_trabajadores", "nivel_riesgo", "capitulo_vigente", "updated_at"])
+
+            # 2. Actualizar capítulo de la Evaluación activa MANTENIENDO la misma Evaluacion.id = X
+            evaluacion, _ = Evaluacion.objects.get_or_create(
+                empresa=empresa,
+                anio=anio_actual,
+                defaults={"capitulo": capitulo_calculado},
+            )
+            evaluacion.capitulo = capitulo_calculado
+            # Recalcular puntaje total sumando SOLO respuestas pertenecientes al nuevo capítulo
+            puntaje_total = (
+                Respuesta.objects.filter(evaluacion=evaluacion, estandar__capitulo=capitulo_calculado)
+                .aggregate(total=Sum("puntaje"))["total"]
+                or 0
+            )
+            evaluacion.puntaje_total = puntaje_total
+            evaluacion.save(update_fields=["capitulo", "puntaje_total", "updated_at"])
+
+            # 3. Registrar historial inmutable TransicionCapitulo
+            transicion = TransicionCapitulo.objects.create(
+                empresa=empresa,
+                evaluacion=evaluacion,
+                capitulo_anterior=capitulo_anterior,
+                capitulo_nuevo=capitulo_calculado,
+                usuario=request.user,
+                motivo=motivo or "Actualización de contexto organizacional",
+                contexto_anterior=contexto_anterior,
+                contexto_nuevo=contexto_nuevo,
+            )
+
+            # 4. Registrar AuditLog
+            AuditLog.objects.create(
+                usuario=request.user,
+                empresa=empresa,
+                accion="TRANSICION_CAPITULO",
+                tabla_afectada="empresas",
+                registro_id=str(empresa.id),
+                valores_anteriores={"capitulo_vigente": capitulo_anterior, **contexto_anterior},
+                valores_nuevos={"capitulo_vigente": capitulo_calculado, **contexto_nuevo},
+                ip=get_ip(request),
+                user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                ruta=request.path,
+                metodo_http=request.method,
+            )
+
+        serializer = EmpresaSerializer(empresa)
+        return Response(
+            {
+                "success": True,
+                "message": f"Transición de capítulo realizada con éxito: Capítulo {capitulo_anterior} -> Capítulo {capitulo_calculado}.",
+                "empresa": serializer.data,
+                "transicion": {
+                    "id": str(transicion.id),
+                    "capitulo_anterior": capitulo_anterior,
+                    "capitulo_nuevo": capitulo_calculado,
+                    "created_at": transicion.created_at.isoformat(),
+                    "evaluacion_id": str(evaluacion.id),
+                },
+            }
+        )
+
+
+# ── GET /api/modulo0/historial-transiciones ───────────────────────
+class HistorialTransicionesCapituloView(APIView):
+    """Consulta el historial inmutable de transiciones de capítulo de la empresa."""
+    permission_classes = [IsAuthenticated, PerteneceAMismaEmpresaOAdmin]
+
+    def get(self, request):
+        empresa = request.user.empresa
+        if not empresa:
+            return Response({"success": False, "code": "RESOURCE_NOT_FOUND", "message": "Sin empresa asociada."}, status=400)
+
+        transiciones = TransicionCapitulo.objects.filter(empresa=empresa).select_related("usuario").order_by("-created_at")
+        data = []
+        for t in transiciones:
+            data.append({
+                "id": str(t.id),
+                "capitulo_anterior": t.capitulo_anterior,
+                "capitulo_nuevo": t.capitulo_nuevo,
+                "usuario_nombre": t.usuario.get_full_name() or t.usuario.username,
+                "usuario_email": t.usuario.email,
+                "motivo": t.motivo,
+                "contexto_anterior": t.contexto_anterior,
+                "contexto_nuevo": t.contexto_nuevo,
+                "created_at": t.created_at.isoformat(),
+            })
+        return Response(data)
+
 
 
 # ── POST /api/modulo0/contexto/logo ───────────────────────────────

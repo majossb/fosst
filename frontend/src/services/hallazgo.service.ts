@@ -11,8 +11,13 @@ export const hallazgoService = {
   listar: () => apiClient.get<HallazgosResponse>('/hallazgos'),
 
   crear: (data: {
-    evaluacion_id: string; descripcion: string
-    tipo: TipoHallazgo; estandar_codigo?: string
+    evaluacion_id?: string
+    evaluacion?: string
+    descripcion: string
+    tipo: TipoHallazgo
+    estandar_id?: string
+    estandar_codigo?: string
+    estandar?: string
   }) => apiClient.post<Hallazgo>('/hallazgos', data),
 
   actualizar: (id: string, data: {

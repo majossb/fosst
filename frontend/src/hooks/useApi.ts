@@ -97,11 +97,12 @@ export function useHallazgos() {
 export function useCrearHallazgo() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: { evaluacion_id: string; descripcion: string; tipo: TipoHallazgo }) =>
+    mutationFn: (data: Parameters<typeof hallazgoService.crear>[0]) =>
       hallazgoService.crear(data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['hallazgos'] })
       qc.invalidateQueries({ queryKey: ['dashboard'] })
+      qc.invalidateQueries({ queryKey: ['notificaciones'] })
     },
   })
 }
@@ -286,3 +287,11 @@ export function useEPPsCatalog() {
     staleTime: 1000 * 60 * 5,
   })
 }
+
+export function useHistorialEvaluaciones() {
+  return useQuery({
+    queryKey: ['historial-evaluaciones'],
+    queryFn: estandarService.getHistorial,
+  })
+}
+

@@ -65,7 +65,11 @@ class EstandaresConRespuestasView(APIView):
         )
 
         estandares = Estandar.objects.filter(capitulo=capitulo).order_by("ciclo_phva", "codigo")
-        respuestas = Respuesta.objects.filter(evaluacion=evaluacion).select_related("estandar")
+        respuestas = (
+            Respuesta.objects.filter(evaluacion=evaluacion)
+            .select_related("estandar")
+            .prefetch_related("evidencias")
+        )
 
         # Indexar respuestas por estandar_id para O(1) lookup
         resp_map = {str(r.estandar_id): r for r in respuestas}
@@ -77,23 +81,28 @@ class EstandaresConRespuestasView(APIView):
             if resp and hasattr(resp, "evidencias"):
                 evidencias_count = resp.evidencias.count()
 
+            puntaje_est = float(resp.puntaje or 0) if (resp and resp.puntaje) else 0.0
+            max_est = float(est.puntaje_maximo)
+            porcentaje = round((puntaje_est / max_est) * 100) if max_est > 0 else 0
+
             resultado.append({
-                "estandar_id": est.id,
+                "estandar_id": str(est.id),
                 "codigo": est.codigo,
                 "nombre": est.nombre,
                 "descripcion": est.descripcion,
                 "ciclo_phva": est.ciclo_phva,
-                "puntaje_maximo": float(est.puntaje_maximo),
+                "puntaje_maximo": max_est,
                 "obligatorio": est.obligatorio,
-                "respuesta_id": resp.id if resp else None,
+                "respuesta_id": str(resp.id) if resp else None,
                 "estado": resp.estado if resp else "sin_respuesta",
-                "puntaje": float(resp.puntaje) if resp and resp.puntaje else 0,
+                "puntaje": puntaje_est,
                 "observacion": resp.observacion if resp else "",
                 "evidencias": evidencias_count,
+                "porcentaje": porcentaje,
             })
 
         return Response({
-            "evaluacion_id": evaluacion.id,
+            "evaluacion_id": str(evaluacion.id),
             "capitulo": capitulo,
             "estandares": resultado,
         })
@@ -152,9 +161,15 @@ class ActualizarRespuestaView(APIView):
             },
         )
 
-        # Recalcular puntaje total de la evaluación
+        # Recalcular puntaje total — SOLO respuestas del capítulo vigente de la empresa.
+        # Esto garantiza que tras una transición de capítulo el puntaje sea coherente
+        # y no mezcle respuestas de capítulos anteriores con las del capítulo actual.
+        capitulo_activo = empresa.capitulo_vigente or evaluacion.capitulo
         puntaje_total = (
-            Respuesta.objects.filter(evaluacion=evaluacion)
+            Respuesta.objects.filter(
+                evaluacion=evaluacion,
+                estandar__capitulo=capitulo_activo,
+            )
             .aggregate(total=Sum("puntaje"))["total"]
             or 0
         )
@@ -205,13 +220,13 @@ class HistorialEvaluacionesView(APIView):
         data = []
         for ev in evaluaciones:
             data.append({
-                "id": ev.id,
+                "id": str(ev.id),
                 "anio": ev.anio,
                 "capitulo": ev.capitulo,
                 "puntaje_total": float(ev.puntaje_total) if ev.puntaje_total else None,
                 "estado": ev.estado,
-                "fecha_completado": ev.fecha_completado,
-                "created_at": ev.created_at,
+                "fecha_completado": ev.fecha_completado.isoformat() if ev.fecha_completado else None,
+                "created_at": ev.created_at.isoformat() if ev.created_at else None,
                 "respuestas_count": ev.respuestas.count(),
                 "hallazgos_count": ev.hallazgos.count() if hasattr(ev, "hallazgos") else 0,
             })
@@ -256,9 +271,264 @@ class ResumenEvaluacionView(APIView):
 
 # ── ViewSet de Apelaciones ────────────────────────────────────────
 class ApelacionViewSet(EmpresaScopedViewSet):
-    queryset = Apelacion.objects.select_related("respuesta", "solicitante")
+    queryset = Apelacion.objects.select_related("respuesta__estandar", "respuesta__evaluacion", "solicitante")
     serializer_class = ApelacionSerializer
     empresa_field = "respuesta__evaluacion__empresa"
 
-    def perform_create(self, serializer):
-        serializer.save(solicitante=self.request.user)
+    def create(self, request, *args, **kwargs):
+        empresa = request.user.empresa
+        if not empresa:
+            return Response(
+                {"success": False, "code": "PERMISSION_DENIED", "message": "El usuario no tiene una empresa asociada."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        respuesta_id = request.data.get("respuesta")
+        if not respuesta_id:
+            return Response(
+                {"success": False, "code": "VALIDATION_ERROR", "message": "Debe especificar la respuesta a apelar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            respuesta = Respuesta.objects.select_related("evaluacion").get(id=respuesta_id)
+        except (Respuesta.DoesNotExist, ValueError):
+            return Response(
+                {"success": False, "code": "RESOURCE_NOT_FOUND", "message": "La respuesta especificada no existe."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Multi-Tenant Isolation: Ensure respuesta belongs to user's company
+        if respuesta.evaluacion.empresa_id != empresa.id:
+            return Response(
+                {"success": False, "code": "PERMISSION_DENIED", "message": "No tiene permiso para apelar observaciones de otra empresa."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Prevent duplicate active appeals for same response
+        if Apelacion.objects.filter(respuesta=respuesta, estado=Apelacion.Estado.PENDIENTE).exists():
+            return Response(
+                {"success": False, "code": "APPEAL_ALREADY_PENDING", "message": "Ya existe una apelación pendiente para este estándar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        apelacion = serializer.save(solicitante=request.user)
+
+        # Notify Auditor(s) of company about new appeal
+        from apps.accounts.models import Usuario, UserRole
+        from apps.calendario.models import Notificacion
+        auditores = Usuario.objects.filter(
+            empresa=empresa,
+            rol=UserRole.AUDITOR,
+            is_active=True
+        )
+        for aud in auditores:
+            Notificacion.objects.create(
+                empresa=empresa,
+                usuario=aud,
+                tipo=Notificacion.Tipo.ALERTA,
+                nivel=Notificacion.Nivel.IMPORTANTE,
+                mensaje=f"🔔 Nueva apelación de Responsable SST sobre el estándar {respuesta.estandar.codigo} ({respuesta.estandar.nombre}): \"{apelacion.motivo}\"",
+                leida=False
+            )
+
+        # Registro en AuditLog
+        from apps.auditoria.models import AuditLog
+        from apps.empresas.views import get_ip
+        AuditLog.objects.create(
+            usuario=request.user,
+            empresa=empresa,
+            accion="CREAR_APELACION",
+            tabla_afectada="apelaciones",
+            registro_id=str(apelacion.id),
+            valores_nuevos={"motivo": apelacion.motivo, "respuesta_id": str(respuesta.id)},
+            ip=get_ip(request),
+            user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            ruta=request.path,
+            metodo_http=request.method,
+        )
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(
+            {
+                "success": True,
+                "message": "Apelación presentada exitosamente.",
+                "data": serializer.data,
+            },
+            status=status.HTTP_201_CREATED,
+            headers=headers,
+        )
+
+    @action(detail=True, methods=["post"], url_path="resolver")
+    def resolver(self, request, pk=None):
+        from apps.accounts.models import UserRole
+        if getattr(request.user, "rol", None) not in [UserRole.AUDITOR, UserRole.ADMIN] and not getattr(request.user, "is_superuser", False):
+            return Response(
+                {"success": False, "code": "PERMISSION_DENIED", "message": "Solo auditores o administradores pueden resolver apelaciones."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        apelacion = self.get_object()
+        empresa = request.user.empresa or apelacion.respuesta.evaluacion.empresa
+
+        decision = str(request.data.get("decision") or request.data.get("estado") or "resuelta").lower()
+        respuesta_auditor = str(request.data.get("respuesta_auditor", "")).strip()
+
+        if decision not in ["resuelta", "aceptada", "rechazada"]:
+            return Response(
+                {"success": False, "code": "VALIDATION_ERROR", "message": "La decisión debe ser 'aceptada', 'rechazada' o 'resuelta'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        estado_previo = apelacion.estado
+        apelacion.estado = decision
+        if respuesta_auditor:
+            apelacion.respuesta_auditor = respuesta_auditor
+        apelacion.save(update_fields=["estado", "respuesta_auditor", "updated_at"])
+
+        # Update standard response state if appeal is accepted
+        respuesta = apelacion.respuesta
+        evaluacion = respuesta.evaluacion
+        nuevo_estado = request.data.get("nuevo_estado")
+
+        if decision == "aceptada":
+            if nuevo_estado in ["cumple", "no_cumple", "parcial", "no_aplica"]:
+                respuesta.estado = nuevo_estado
+            else:
+                respuesta.estado = Respuesta.Estado.CUMPLE
+
+            if respuesta.estado == Respuesta.Estado.CUMPLE:
+                respuesta.puntaje = respuesta.estandar.puntaje_maximo
+            elif respuesta.estado == Respuesta.Estado.PARCIAL:
+                respuesta.puntaje = float(respuesta.estandar.puntaje_maximo) / 2
+            elif respuesta.estado in [Respuesta.Estado.NO_CUMPLE, Respuesta.Estado.NO_APLICA]:
+                respuesta.puntaje = 0
+
+            respuesta.save()
+
+            # Recalculate evaluation score
+            capitulo_vigente = evaluacion.empresa.capitulo_vigente or evaluacion.capitulo or "II"
+            respuestas_vigentes = Respuesta.objects.filter(
+                evaluacion=evaluacion,
+                estandar__capitulo=capitulo_vigente
+            )
+            total_puntaje = sum(float(r.puntaje or 0) for r in respuestas_vigentes)
+            evaluacion.puntaje_total = total_puntaje
+            evaluacion.save(update_fields=["puntaje_total", "updated_at"])
+
+        # Notify Responsable SST of resolution
+        from apps.accounts.models import Usuario, UserRole
+        from apps.calendario.models import Notificacion
+        destinatarios = list(Usuario.objects.filter(
+            empresa=evaluacion.empresa,
+            rol=UserRole.RESPONSABLE,
+            is_active=True
+        ))
+        if apelacion.solicitante and apelacion.solicitante not in destinatarios:
+            destinatarios.append(apelacion.solicitante)
+
+        for dest in destinatarios:
+            Notificacion.objects.create(
+                empresa=evaluacion.empresa,
+                usuario=dest,
+                tipo=Notificacion.Tipo.INFORMATIVA,
+                nivel=Notificacion.Nivel.IMPORTANTE,
+                mensaje=f"🔔 Apelación resuelta ({decision.upper()}) sobre el estándar {respuesta.estandar.codigo} ({respuesta.estandar.nombre}). Respuesta Auditor: \"{respuesta_auditor or 'Sin comentarios adicionales.'}\"",
+                leida=False
+            )
+
+        from apps.auditoria.models import AuditLog
+        from apps.empresas.views import get_ip
+        AuditLog.objects.create(
+            usuario=request.user,
+            empresa=empresa,
+            accion="RESOLVER_APELACION",
+            tabla_afectada="apelaciones",
+            registro_id=str(apelacion.id),
+            valores_anteriores={"estado": estado_previo},
+            valores_nuevos={"estado": apelacion.estado, "respuesta_auditor": apelacion.respuesta_auditor},
+            ip=get_ip(request),
+            user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            ruta=request.path,
+            metodo_http=request.method,
+        )
+
+        serializer = self.get_serializer(apelacion)
+        return Response({
+            "success": True,
+            "message": f"Apelación {decision} exitosamente.",
+            "data": serializer.data,
+        })
+
+
+
+# ── GET /api/evaluaciones/actual/respuestas-historicas ───────────
+class RespuestasHistoricasEvaluacionView(APIView):
+    """
+    Devuelve TODAS las respuestas de la evaluación activa (sin filtrar por
+    capítulo), etiquetando cada una con el capítulo al que pertenece su
+    estándar.  Permite visualizar respuestas registradas bajo capítulos
+    anteriores después de una transición RF-USR-03.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        empresa = request.user.empresa
+        if not empresa:
+            return Response(
+                {"success": False, "code": "RESOURCE_NOT_FOUND", "message": "Sin empresa asociada."},
+                status=400,
+            )
+
+        anio_actual = datetime.now().year
+        capitulo_vigente = empresa.capitulo_vigente or "II"
+
+        try:
+            evaluacion = Evaluacion.objects.get(empresa=empresa, anio=anio_actual)
+        except Evaluacion.DoesNotExist:
+            return Response(
+                {
+                    "success": True,
+                    "evaluacion_id": None,
+                    "capitulo_vigente": capitulo_vigente,
+                    "respuestas": [],
+                    "total": 0,
+                }
+            )
+
+        respuestas_qs = (
+            Respuesta.objects.filter(evaluacion=evaluacion)
+            .select_related("estandar")
+            .order_by("estandar__capitulo", "estandar__ciclo_phva", "estandar__codigo")
+        )
+
+        data = []
+        for r in respuestas_qs:
+            es_capitulo_vigente = r.estandar.capitulo == capitulo_vigente
+            data.append({
+                "respuesta_id": str(r.id),
+                "estandar_id": str(r.estandar.id),
+                "codigo": r.estandar.codigo,
+                "nombre": r.estandar.nombre,
+                "ciclo_phva": r.estandar.ciclo_phva,
+                "puntaje_maximo": float(r.estandar.puntaje_maximo),
+                "estado": r.estado,
+                "puntaje": float(r.puntaje or 0),
+                "observacion": r.observacion or "",
+                # Etiqueta explícita del capítulo al que pertenece el estándar
+                "capitulo_estandar": r.estandar.capitulo,
+                # Indica si esta respuesta cuenta para el capítulo actualmente vigente
+                "es_capitulo_vigente": es_capitulo_vigente,
+                "updated_at": r.updated_at.isoformat() if hasattr(r, "updated_at") and r.updated_at else None,
+            })
+
+        return Response({
+            "success": True,
+            "evaluacion_id": str(evaluacion.id),
+            "capitulo_vigente": capitulo_vigente,
+            "respuestas": data,
+            "total": len(data),
+        })
+

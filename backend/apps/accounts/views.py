@@ -83,10 +83,8 @@ class RegistroView(APIView):
                 user_agent=request.META.get("HTTP_USER_AGENT", ""),
             )
 
-        enlace = (
-            f"{request.build_absolute_uri('/')[:-1]}"
-            f"/activar-cuenta?token={token.token}"
-        )
+        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173").rstrip("/")
+        enlace = f"{frontend_url}/activar-cuenta?token={token.token}"
 
         cuerpo = render_to_string(
             "emails/activacion_cuenta.txt",
@@ -138,7 +136,9 @@ class ActivarCuentaView(APIView):
         if not token or not token.esta_vigente():
             return Response(
                 {
-                    "message": "El enlace de activación es inválido o ha expirado."
+                    "success": False,
+                    "code": "INVALID_ACTIVATION_TOKEN",
+                    "message": "El enlace de activación es inválido o ha expirado.",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -146,9 +146,10 @@ class ActivarCuentaView(APIView):
         usuario = token.usuario
 
         with transaction.atomic():
+            usuario.activo = True
             usuario.is_active = True
             usuario.email_verificado = True
-            usuario.save(update_fields=["is_active", "email_verificado"])
+            usuario.save(update_fields=["activo", "is_active", "email_verificado"])
 
             token.usado = True
             token.save(update_fields=["usado"])
@@ -163,11 +164,11 @@ class ActivarCuentaView(APIView):
 
         return Response(
             {
-                "message": "Cuenta activada correctamente. Ya puedes iniciar sesión."
+                "success": True,
+                "message": "Cuenta activada correctamente. Ya puedes iniciar sesión.",
             },
             status=status.HTTP_200_OK,
         )
-
 
 
 class LoginView(APIView):
@@ -217,11 +218,24 @@ class LoginView(APIView):
         )
 
         if usuario_autenticado is None:
+            if usuario and usuario.check_password(data["password"]) and (not usuario.activo or not usuario.is_active):
+                return Response(
+                    {
+                        "success": False,
+                        "code": "ACCOUNT_NOT_ACTIVATED",
+                        "message": "Tu cuenta aún no ha sido activada. Revisa tu correo electrónico para activarla.",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             return self._fallo(request, usuario)
 
         if not usuario.activo or not usuario.is_active:
             return Response(
-                {"message": "La cuenta está inactiva o pendiente de activación."},
+                {
+                    "success": False,
+                    "code": "ACCOUNT_NOT_ACTIVATED",
+                    "message": "Tu cuenta aún no ha sido activada. Revisa tu correo electrónico para activarla.",
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -246,6 +260,7 @@ class LoginView(APIView):
 
         return Response(
             {
+                "success": True,
                 "message": "Credenciales válidas. Se envió un código de verificación a tu correo.",
                 "usuario_id": str(usuario.id),
                 "otp_expira_en_minutos": settings.OTP_EXPIRATION_MINUTES,
@@ -272,7 +287,11 @@ class LoginView(APIView):
             )
 
         return Response(
-            {"message": "Credenciales incorrectas."},
+            {
+                "success": False,
+                "code": "INVALID_CREDENTIALS",
+                "message": "Credenciales incorrectas.",
+            },
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -299,8 +318,14 @@ class VerificarOTPView(APIView):
         ).order_by("-created_at").first()
 
         if not otp or not otp.esta_vigente():
-            return Response({"message": MENSAJE_GENERICO},
-                             status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {
+                    "success": False,
+                    "code": "INVALID_OTP",
+                    "message": MENSAJE_GENERICO,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not otp.verificar_codigo(data["codigo"]):
             otp.intentos += 1
@@ -312,8 +337,15 @@ class VerificarOTPView(APIView):
                     ip=_ip(request),
                 )
             otp.save(update_fields=["intentos", "usado"])
-            return Response({"message": MENSAJE_GENERICO},
-                             status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {
+                    "success": False,
+                    "code": "INVALID_OTP",
+                    "message": MENSAJE_GENERICO,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
 
         otp.usado = True
         otp.save(update_fields=["usado"])
@@ -385,10 +417,8 @@ class SolicitarResetPasswordView(APIView):
                 + timedelta(hours=settings.PASSWORD_RESET_TOKEN_EXPIRATION_HOURS),
             )
 
-            enlace = (
-                f"{request.build_absolute_uri('/')[:-1]}"
-                f"/reset-password?token={token.token}"
-            )
+            frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173").rstrip("/")
+            enlace = f"{frontend_url}/reset-password?token={token.token}"
 
             cuerpo = render_to_string(
                 "emails/reset_password.txt",

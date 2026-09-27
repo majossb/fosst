@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  postgres_uat:
+    image: postgres:16-alpine
+    container_name: fosst_postgres_uat
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fosst_uat_db}
+      POSTGRES_USER: ${POSTGRES_USER:-fosst_uat_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-PasswordSeguraUAT2026}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_uat_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fosst_uat_user} -d ${POSTGRES_DB:-fosst_uat_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis_uat:
+    image: redis:7-alpine
+    container_name: fosst_redis_uat
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD:-PasswordRedisUAT2026}
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-PasswordRedisUAT2026}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio_uat:
+    image: minio/minio:latest
+    container_name: fosst_minio_uat
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin_uat}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin_uat_pass}
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    volumes:
+      - minio_uat_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  backend_uat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fosst_backend_uat
+    restart: always
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3
+    environment:
+      ENVIRONMENT: uat
+      DEBUG: "False"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-ClaveLargaYSeguraDePruebaUAT2026}
+      JWT_SECRET: ${JWT_SECRET:-ClaveJWTLargaYSeguraDePruebaUAT2026}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-uat-api.fosstvida.com,backend_uat}
+      DATABASE_URL: postgres://${POSTGRES_USER:-fosst_uat_user}:${POSTGRES_PASSWORD:-PasswordSeguraUAT2026}@postgres_uat:5432/${POSTGRES_DB:-fosst_uat_db}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-PasswordRedisUAT2026}@redis_uat:6379/1
+      STORAGE_BACKEND: storages.backends.s3.S3Storage
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin_uat}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin_uat_pass}
+      AWS_STORAGE_BUCKET_NAME: ${AWS_STORAGE_BUCKET_NAME:-fosst-evidencias-uat}
+      AWS_S3_ENDPOINT_URL: ${AWS_S3_ENDPOINT_URL:-http://minio_uat:9000}
+      FRONTEND_URL: ${FRONTEND_URL:-https://uat-app.fosstvida.com}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://uat-app.fosstvida.com}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://uat-app.fosstvida.com,https://uat-api.fosstvida.com}
+    depends_on:
+      postgres_uat:
+        condition: service_healthy
+      redis_uat:
+        condition: service_healthy
+
+  worker_uat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fosst_worker_uat
+    restart: always
+    command: celery -A config worker --loglevel=info --concurrency=2
+    environment:
+      ENVIRONMENT: uat
+      DEBUG: "False"
+      DATABASE_URL: postgres://${POSTGRES_USER:-fosst_uat_user}:${POSTGRES_PASSWORD:-PasswordSeguraUAT2026}@postgres_uat:5432/${POSTGRES_DB:-fosst_uat_db}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-PasswordRedisUAT2026}@redis_uat:6379/1
+    depends_on:
+      postgres_uat:
+        condition: service_healthy
+      redis_uat:
+        condition: service_healthy
+
+  beat_uat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fosst_beat_uat
+    restart: always
+    command: celery -A config beat --loglevel=info
+    environment:
+      ENVIRONMENT: uat
+      DEBUG: "False"
+      DATABASE_URL: postgres://${POSTGRES_USER:-fosst_uat_user}:${POSTGRES_PASSWORD:-PasswordSeguraUAT2026}@postgres_uat:5432/${POSTGRES_DB:-fosst_uat_db}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-PasswordRedisUAT2026}@redis_uat:6379/1
+    depends_on:
+      postgres_uat:
+        condition: service_healthy
+      redis_uat:
+        condition: service_healthy
+
+volumes:
+  postgres_uat_data:
+  minio_uat_data:

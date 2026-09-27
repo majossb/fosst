@@ -4,7 +4,8 @@ import { modulo0Service, EmpresaContexto } from '@/services/modulo0.service'
 import { resolveMediaUrl } from '@/services/api.client'
 import { Card, Button, Badge } from '@/components/ui'
 import { FormField, Input, Select, LoadingSpinner, ErrorDisplay } from '@/components/ui/forms'
-import { Camera, Check, Loader2, AlertCircle, Building2, Sparkles, BookOpen, X, Cpu, ImageOff } from 'lucide-react'
+import { Camera, Check, Loader2, AlertCircle, Building2, Sparkles, BookOpen, X, Cpu, ImageOff, ShieldAlert, ArrowRight } from 'lucide-react'
+
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -65,6 +66,17 @@ export default function EmpresaContextoView() {
   // Estados para Logo
   const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null)
   const [logoError, setLogoError] = useState('')
+
+  // Estados para RF-USR-03: Transición de Capítulo
+  const [transicionModalData, setTransicionModalData] = useState<{
+    capitulo_anterior: string
+    capitulo_nuevo: string
+    num_trabajadores: number
+    nivel_riesgo: number
+  } | null>(null)
+  const [motivoTransicion, setMotivoTransicion] = useState('')
+  const [isConfirmingTransicion, setIsConfirmingTransicion] = useState(false)
+  const [transicionError, setTransicionError] = useState('')
 
   // Constantes de validación de logo
   const LOGO_ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp']
@@ -144,7 +156,6 @@ export default function EmpresaContextoView() {
     }
   }
 
-
   const saveMutation = useMutation({
     mutationFn: (data: Partial<EmpresaContexto>) => modulo0Service.updateContexto(data),
     onMutate: () => setStatus('saving'),
@@ -153,11 +164,17 @@ export default function EmpresaContextoView() {
       queryClient.invalidateQueries({ queryKey: ['modulo0'] })
       setTimeout(() => setStatus('idle'), 2500)
     },
-    onError: () => {
+    onError: (err: any) => {
+      if (err?.code === 'CHAPTER_CHANGE_REQUIRES_CONFIRMATION' && err?.data) {
+        setTransicionModalData(err.data)
+        setStatus('idle')
+        return
+      }
       setStatus('error')
       setTimeout(() => setStatus('idle'), 3000)
     },
   })
+
 
   const logoMutation = useMutation({
     mutationFn: (file: File) => modulo0Service.uploadLogo(file),
@@ -284,7 +301,44 @@ export default function EmpresaContextoView() {
     }
   }
 
+  const handleConfirmarTransicion = async () => {
+    if (!transicionModalData) return
+    setIsConfirmingTransicion(true)
+    setTransicionError('')
+    try {
+      await modulo0Service.confirmarTransicionCapitulo({
+        num_trabajadores: transicionModalData.num_trabajadores,
+        nivel_riesgo: transicionModalData.nivel_riesgo,
+        motivo: motivoTransicion,
+      })
+      setTransicionModalData(null)
+      setMotivoTransicion('')
+      queryClient.invalidateQueries({ queryKey: ['modulo0'] })
+      queryClient.invalidateQueries({ queryKey: ['estandares'] })
+      setStatus('saved')
+      setTimeout(() => setStatus('idle'), 2500)
+    } catch (err: any) {
+      setTransicionError(err?.friendlyMessage || err?.message || 'Error al realizar la transición de capítulo.')
+    } finally {
+      setIsConfirmingTransicion(false)
+    }
+  }
+
+  const handleCancelarTransicion = () => {
+    setTransicionModalData(null)
+    setMotivoTransicion('')
+    setTransicionError('')
+    if (empresa) {
+      setForm({
+        ...form,
+        num_trabajadores: empresa.num_trabajadores,
+        nivel_riesgo: empresa.nivel_riesgo,
+      })
+    }
+  }
+
   const getRiesgoBadge = (clase: number) => {
+
     switch (clase) {
       case 1: return <Badge variant="green">Clase I (Mínimo)</Badge>
       case 2: return <Badge variant="blue">Clase II (Bajo)</Badge>
@@ -829,6 +883,103 @@ export default function EmpresaContextoView() {
           </div>
         </div>
       )}
+
+      {/* Modal de Confirmación de Transición de Capítulo (RF-USR-03) */}
+      {transicionModalData && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-xl w-full overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200 flex flex-col">
+            {/* Header Modal */}
+            <div className="bg-gradient-to-r from-amber-600 via-amber-500 to-amber-700 text-white px-6 py-5 flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-white/20 rounded-xl backdrop-blur-sm">
+                  <ShieldAlert className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base">Transición de Capítulo Normativo</h3>
+                  <p className="text-xs text-amber-100">
+                    Cambio en las condiciones organizacionales detectado (RF-USR-03)
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleCancelarTransicion}
+                className="text-amber-200 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Cuerpo del Modal */}
+            <div className="p-6 space-y-5 bg-slate-50/50">
+              {/* Resumen del cambio */}
+              <div className="bg-white p-4 rounded-xl border border-amber-200 shadow-sm flex items-center justify-between gap-4">
+                <div className="text-center flex-1 p-3 bg-amber-50/50 rounded-lg border border-amber-100">
+                  <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider block">Capítulo Actual</span>
+                  <span className="text-2xl font-black text-slate-800">Capítulo {transicionModalData.capitulo_anterior}</span>
+                </div>
+                <ArrowRight className="w-6 h-6 text-amber-500 flex-shrink-0" />
+                <div className="text-center flex-1 p-3 bg-brand-50/50 rounded-lg border border-brand-100">
+                  <span className="text-[10px] font-bold text-brand-700 uppercase tracking-wider block">Nuevo Capítulo</span>
+                  <span className="text-2xl font-black text-brand-700">Capítulo {transicionModalData.capitulo_nuevo}</span>
+                </div>
+              </div>
+
+              {/* Explicación amigable del comportamiento */}
+              <div className="text-xs text-slate-600 space-y-2 bg-white p-4 rounded-xl border border-slate-200 leading-relaxed">
+                <p className="font-semibold text-slate-800 flex items-center gap-1.5">
+                  <Check className="w-4 h-4 text-green-600" />
+                  Preservación garantizada de respuestas históricas
+                </p>
+                <p>
+                  Las respuestas y evidencias diligenciadas bajo el Capítulo {transicionModalData.capitulo_anterior} <strong>permanecerán intactas en la base de datos</strong>. Ninguna información será eliminada ni reiniciada.
+                </p>
+                <p className="text-slate-500 text-[11px] pt-1 border-t border-slate-100">
+                  El porcentaje de cumplimiento actual se recalculará en función de los estándares aplicables al <strong>Capítulo {transicionModalData.capitulo_nuevo}</strong>. Podrás consultar tus respuestas anteriores en la sección de Historial.
+                </p>
+              </div>
+
+              {/* Campo para motivo opcional */}
+              <FormField label="Motivo o Justificación del Cambio (Opcional)">
+                <textarea
+                  value={motivoTransicion}
+                  onChange={(e) => setMotivoTransicion(e.target.value)}
+                  placeholder="Ej: Aumento de la nómina de personal a más de 11 trabajadores..."
+                  className="w-full text-xs border border-slate-300 rounded-xl p-3 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 min-h-[70px]"
+                />
+              </FormField>
+
+              {transicionError && (
+                <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{transicionError}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Footer del Modal */}
+            <div className="flex gap-3 justify-end px-6 py-4 border-t border-slate-200 bg-slate-100">
+              <Button
+                onClick={handleCancelarTransicion}
+                variant="secondary"
+                className="text-xs py-2 px-4"
+                disabled={isConfirmingTransicion}
+              >
+                Cancelar y Revertir
+              </Button>
+              <Button
+                onClick={handleConfirmarTransicion}
+                variant="primary"
+                className="text-xs py-2 px-5 bg-amber-600 hover:bg-amber-700 text-white border-none shadow-md shadow-amber-600/20 flex items-center gap-1.5"
+                disabled={isConfirmingTransicion}
+              >
+                {isConfirmingTransicion && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Confirmar Transición a Capítulo {transicionModalData.capitulo_nuevo}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
+

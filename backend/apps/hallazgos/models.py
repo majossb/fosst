@@ -11,6 +11,8 @@ class Hallazgo(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     evaluacion = models.ForeignKey("estandares.Evaluacion", on_delete=models.CASCADE, related_name="hallazgos")
     auditor = models.ForeignKey("accounts.Usuario", on_delete=models.PROTECT, related_name="hallazgos")
+    estandar = models.ForeignKey("estandares.Estandar", on_delete=models.SET_NULL, null=True, blank=True, related_name="hallazgos")
+    respuesta = models.ForeignKey("estandares.Respuesta", on_delete=models.SET_NULL, null=True, blank=True, related_name="hallazgos")
     descripcion = models.TextField()
     tipo = models.CharField(max_length=30, choices=Tipo.choices)
     created_at = models.DateTimeField(auto_now_add=True)

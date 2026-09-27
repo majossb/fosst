@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/store/auth.context'
+import { ApiError } from '@/services/api.client'
 
 const PARTICLES = [
   { w:40,  h:40,  left:'5%',  dur:'18s', delay:'0s',  rot:'rotate(20deg)' },
@@ -60,11 +61,12 @@ export default function LoginPage() {
         replace: true,
       })
     } catch (err: any) {
-      const message =
-        err?.message ??
-        err?.response?.data?.message ??
-        'Error de autenticación. Verifica tus datos.'
-      setError(message)
+      if (err instanceof ApiError) {
+        setError(err.friendlyMessage)
+      } else {
+        const message = err?.message ?? 'No pudimos iniciar sesión con los datos ingresados.'
+        setError(message)
+      }
     } finally {
       setLoading(false)
     }

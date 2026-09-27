@@ -4,6 +4,8 @@ from .models import Hallazgo, PlanMejora
 
 class HallazgoSerializer(serializers.ModelSerializer):
     auditor_nombre = serializers.CharField(source="auditor.get_full_name", read_only=True)
+    estandar_codigo = serializers.CharField(source="estandar.codigo", read_only=True, default=None)
+    estandar_nombre = serializers.CharField(source="estandar.nombre", read_only=True, default=None)
 
     class Meta:
         model = Hallazgo
