@@ -227,7 +227,7 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "ALGORITHM": "HS256",
-    "SIGNING_KEY": env("JWT_SECRET"),
+    "SIGNING_KEY": env("JWT_SECRET", default="fosst-jwt-secret-key-default-2026"),
     "AUTH_HEADER_TYPES": ("Bearer",),
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "sub",
@@ -244,7 +244,7 @@ AXES_LOCKOUT_PARAMETERS = ["username", "ip_address"]   # bloquea por usuario Y p
 AXES_RESET_ON_SUCCESS = True
 
 # ── Email (Resend API) ────────────────────────────────────────────────────
-RESEND_API_KEY = env("RESEND_API_KEY")
+RESEND_API_KEY = env("RESEND_API_KEY", default="")
 
 EMAIL_FROM = env(
     "EMAIL_FROM",
